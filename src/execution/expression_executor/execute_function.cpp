@@ -194,83 +194,84 @@ void ExpressionExecutor::Execute(const BoundFunctionExpression &expr, Expression
 
 	D_ASSERT(expr.function.HasFunctionCallback());
 	auto &execute_function_state = state->Cast<ExecuteFunctionState>();
-    if (!execute_function_state.TryExecuteDictionaryExpression(expr, arguments, *state, result)) {
-        // Optional sandboxing of UDF execution: enabled via environment variable DUCKDB_UDF_SANDBOX=1
-        // IMPORTANT: Only apply to external (non-built-in) scalar functions. Built-ins are never sandboxed.
-        // Strategy (POSIX): use dladdr to compare the shared object of the callback against a known DuckDB symbol.
-        bool sandbox_should_probe = false;
-        if (HasContext()) {
-            const char *env = std::getenv("DUCKDB_UDF_SANDBOX");
-            const bool sandbox_env = env && (StringUtil::CIEquals(env, "1") || StringUtil::CIEquals(env, "true") ||
-                                          StringUtil::CIEquals(env, "on"));
-            if (sandbox_env) {
+	if (!execute_function_state.TryExecuteDictionaryExpression(expr, arguments, *state, result)) {
+		// Optional sandboxing of UDF execution: enabled via environment variable DUCKDB_UDF_SANDBOX=1
+		// IMPORTANT: Only apply to external (non-built-in) scalar functions. Built-ins are never sandboxed.
+		// Strategy (POSIX): use dladdr to compare the shared object of the callback against a known DuckDB symbol.
+		bool sandbox_should_probe = false;
+		if (HasContext()) {
+			const char *env = std::getenv("DUCKDB_UDF_SANDBOX");
+			const bool sandbox_env = env && (StringUtil::CIEquals(env, "1") || StringUtil::CIEquals(env, "true") ||
+			                                 StringUtil::CIEquals(env, "on"));
+			if (sandbox_env) {
 #if defined(__unix__) || defined(__APPLE__)
-                // Identify external functions by shared object provenance
-                using FnPtr = void (*)(DataChunk &, ExpressionState &, Vector &);
-                scalar_function_t cb = expr.function.GetFunctionCallback();
-                // Attempt to extract a raw function pointer from std::function
-                FnPtr const *fptr = cb.target<FnPtr>();
-                if (fptr && *fptr) {
-                    Dl_info info_target{};
-                    Dl_info info_duck{};
-                    (void)dladdr(reinterpret_cast<void *>(*fptr), &info_target);
-                    (void)dladdr(reinterpret_cast<void *>(&ScalarFunction::NopFunction), &info_duck);
-                    // If we can resolve both, and the shared objects differ, treat as external → sandbox
-                    if (info_target.dli_fname && info_duck.dli_fname &&
-                        strcmp(info_target.dli_fname, info_duck.dli_fname) != 0) {
-                        sandbox_should_probe = true;
-                    }
-                    // If they are the same SO, it's built-in → do not sandbox
-                    // If we cannot classify (dladdr failure), we default to not sandboxing to avoid penalizing built-ins.
-                }
+				// Identify external functions by shared object provenance
+				using FnPtr = void (*)(DataChunk &, ExpressionState &, Vector &);
+				scalar_function_t cb = expr.function.GetFunctionCallback();
+				// Attempt to extract a raw function pointer from std::function
+				FnPtr const *fptr = cb.target<FnPtr>();
+				if (fptr && *fptr) {
+					Dl_info info_target {};
+					Dl_info info_duck {};
+					(void)dladdr(reinterpret_cast<void *>(*fptr), &info_target);
+					(void)dladdr(reinterpret_cast<void *>(&ScalarFunction::NopFunction), &info_duck);
+					// If we can resolve both, and the shared objects differ, treat as external → sandbox
+					if (info_target.dli_fname && info_duck.dli_fname &&
+					    strcmp(info_target.dli_fname, info_duck.dli_fname) != 0) {
+						sandbox_should_probe = true;
+					}
+					// If they are the same SO, it's built-in → do not sandbox
+					// If we cannot classify (dladdr failure), we default to not sandboxing to avoid penalizing
+					// built-ins.
+				}
 #else
-                (void)sandbox_env; // unused on non-POSIX
+				(void)sandbox_env; // unused on non-POSIX
 #endif
-            }
-        }
+			}
+		}
 
-        if (sandbox_should_probe) {
-            // Thread-based probe: run the UDF once in a separate thread to allow the main thread
-            // to observe interrupts. Note: threads cannot be forcibly terminated portably.
-            // On interrupt, we join the worker to avoid use-after-free, then throw InterruptException.
-            std::atomic<bool> worker_done{false};
-            std::exception_ptr worker_exception = nullptr;
+		if (sandbox_should_probe) {
+			// Thread-based probe: run the UDF once in a separate thread to allow the main thread
+			// to observe interrupts. Note: threads cannot be forcibly terminated portably.
+			// On interrupt, we join the worker to avoid use-after-free, then throw InterruptException.
+			std::atomic<bool> worker_done {false};
+			std::exception_ptr worker_exception = nullptr;
 
-            // Launch worker thread: execute the real function into `result` exactly once
-            std::thread worker([&] {
-                try {
-                    // Execute the UDF once, writing directly into the actual result vector
-                    expr.function.GetFunctionCallback()(arguments, *state, result);
-                } catch (...) {
-                    worker_exception = std::current_exception();
-                }
-                worker_done.store(true, std::memory_order_release);
-            });
+			// Launch worker thread: execute the real function into `result` exactly once
+			std::thread worker([&] {
+				try {
+					// Execute the UDF once, writing directly into the actual result vector
+					expr.function.GetFunctionCallback()(arguments, *state, result);
+				} catch (...) {
+					worker_exception = std::current_exception();
+				}
+				worker_done.store(true, std::memory_order_release);
+			});
 
-            // Poll loop: wait for completion or interrupt
-            while (!worker_done.load(std::memory_order_acquire)) {
-                if (HasContext() && GetContext().IsInterrupted()) {
-                    // Cooperative cancellation only: wait for the worker to finish to keep memory safe
-                    worker.join();
-                    if (worker_exception) {
-                        std::rethrow_exception(worker_exception);
-                    }
-                    throw InterruptException();
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            }
+			// Poll loop: wait for completion or interrupt
+			while (!worker_done.load(std::memory_order_acquire)) {
+				if (HasContext() && GetContext().IsInterrupted()) {
+					// Cooperative cancellation only: wait for the worker to finish to keep memory safe
+					worker.join();
+					if (worker_exception) {
+						std::rethrow_exception(worker_exception);
+					}
+					throw InterruptException();
+				}
+				std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			}
 
-            // Ensure thread is finished
-            worker.join();
+			// Ensure thread is finished
+			worker.join();
 
-            if (worker_exception) {
-                std::rethrow_exception(worker_exception);
-            }
-        } else {
-            // Sandbox disabled or not applicable on this platform
-            expr.function.GetFunctionCallback()(arguments, *state, result);
-        }
-    }
+			if (worker_exception) {
+				std::rethrow_exception(worker_exception);
+			}
+		} else {
+			// Sandbox disabled or not applicable on this platform
+			expr.function.GetFunctionCallback()(arguments, *state, result);
+		}
+	}
 
 	VerifyNullHandling(expr, arguments, result);
 	D_ASSERT(result.GetType() == expr.return_type);
