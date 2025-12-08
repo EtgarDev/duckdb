@@ -16,8 +16,24 @@
 #include <chrono>
 #include <thread>
 #include <cstring>
+#if defined(__unix__) || defined(__APPLE__)
+#include <pthread.h>
+#endif
 
 namespace duckdb {
+
+#if defined(__unix__) || defined(__APPLE__)
+// Cleanup handler used when asynchronously canceling the worker thread.
+// It flips the provided atomic<bool> to true so the controller thread can observe completion
+// and safely proceed without risking use-after-free of argument/result buffers.
+static void udf_cancel_cleanup(void *arg) {
+    if (!arg) {
+        return;
+    }
+    auto *done_flag = reinterpret_cast<std::atomic<bool> *>(arg);
+    done_flag->store(true, std::memory_order_release);
+}
+#endif
 
 ExecuteFunctionState::ExecuteFunctionState(const Expression &expr, ExpressionExecutorState &root)
     : ExpressionState(expr, root) {
@@ -244,24 +260,6 @@ void ExpressionExecutor::Execute(const BoundFunctionExpression &expr, Expression
 			std::atomic<bool> worker_done {false};
 			std::exception_ptr worker_exception = nullptr;
 
-			// Optional timeout in milliseconds via DUCKDB_UDF_TIMEOUT_MS
-			int64_t timeout_ms = -1;
-			if (const char *timeout_env = std::getenv("DUCKDB_UDF_TIMEOUT_MS")) {
-				try {
-					// parse as signed 64-bit integer; ignore invalid values
-					timeout_ms = std::stoll(timeout_env);
-					if (timeout_ms < 0) {
-						timeout_ms = -1;
-					}
-				} catch (...) {
-					timeout_ms = -1;
-				}
-			}
-			std::fprintf(stderr, "UDF timeout: %lld ms\n", timeout_ms);
-			auto start_ts = steady_clock::now();
-			auto deadline = timeout_ms > 0 ? start_ts + milliseconds(timeout_ms) : time_point<steady_clock>();
-			bool timed_out = false;
-
 			// Schedule task on the global scheduler
 			if (!HasContext()) {
 				// No context: fall back to direct execution
@@ -272,81 +270,132 @@ void ExpressionExecutor::Execute(const BoundFunctionExpression &expr, Expression
 				auto &sched = TaskScheduler::GetScheduler(GetContext());
 
 				// Define a minimal task that runs the UDF once
-				class UdfSandboxTask : public Task {
-				public:
-					UdfSandboxTask(const BoundFunctionExpression &expr_p, DataChunk &args_p, ExpressionState &state_p,
-					               Vector &result_p, std::atomic<bool> &done_p, std::exception_ptr &ex_p)
-					    : expr(expr_p), args(args_p), state(state_p), result(result_p), done(done_p), ex(ex_p) {
-					}
-					TaskExecutionResult Execute(TaskExecutionMode) override {
-						std::fprintf(stderr, "Executing UDF sandboxed task\n");
-						std::fprintf(stderr, "Thread: %lu\n", std::this_thread::get_id());
-						try {
-							expr.function.GetFunctionCallback()(args, state, result);
-						} catch (...) {
-							ex = std::current_exception();
-						}
-						done.store(true, std::memory_order_release);
-						return TaskExecutionResult::TASK_FINISHED;
-					}
-					string TaskType() const override {
-						return "UdfSandboxTask";
-					}
+                class UdfSandboxTask : public Task {
+                public:
+                    UdfSandboxTask(const BoundFunctionExpression &expr_p, DataChunk &args_p, ExpressionState &state_p,
+                                   Vector &result_p, std::atomic<bool> &done_p, std::exception_ptr &ex_p
+#if defined(__unix__) || defined(__APPLE__)
+                                   , std::atomic<pthread_t> &tid_p
+#endif
+                                   )
+                        : expr(expr_p), args(args_p), state(state_p), result(result_p), done(done_p), ex(ex_p)
+#if defined(__unix__) || defined(__APPLE__)
+                        , tid(tid_p)
+#endif
+                    {
+                    }
+                    TaskExecutionResult Execute(TaskExecutionMode) override {
+                        std::fprintf(stderr, "Executing UDF sandboxed task\n");
+#if defined(__unix__) || defined(__APPLE__)
+                        // Record our pthread id so the controller can target cancellation if needed
+                        tid.store(pthread_self(), std::memory_order_release);
+                        // Enable asynchronous cancellation so the thread can be terminated promptly on timeout
+                        int old_state = 0, old_type = 0;
+                        (void)pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, &old_state);
+                        (void)pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, &old_type);
+                        // Install a cleanup handler so we always flip the done flag on cancellation
+                        pthread_cleanup_push(&udf_cancel_cleanup, &done);
+#endif
+                        try {
+                            expr.function.GetFunctionCallback()(args, state, result);
+                        } catch (...) {
+                            ex = std::current_exception();
+                        }
+                        done.store(true, std::memory_order_release);
+#if defined(__unix__) || defined(__APPLE__)
+                        // Remove cleanup handler without executing it (we already set done = true above)
+                        pthread_cleanup_pop(0);
+#endif
+                        return TaskExecutionResult::TASK_FINISHED;
+                    }
+                    string TaskType() const override {
+                        return "UdfSandboxTask";
+                    }
 
-				private:
-					const BoundFunctionExpression &expr;
-					DataChunk &args;
-					ExpressionState &state;
-					Vector &result;
-					std::atomic<bool> &done;
-					std::exception_ptr &ex;
-				};
+                private:
+                    const BoundFunctionExpression &expr;
+                    DataChunk &args;
+                    ExpressionState &state;
+                    Vector &result;
+                    std::atomic<bool> &done;
+                    std::exception_ptr &ex;
+#if defined(__unix__) || defined(__APPLE__)
+                    std::atomic<pthread_t> &tid;
+#endif
+                };
 
-				auto ptok = sched.CreateProducer();
-				auto task =
-				    make_shared_ptr<UdfSandboxTask>(expr, arguments, *state, result, worker_done, worker_exception);
-				// Do not persist a raw pointer to ptok on the task to avoid dangling references
-				sched.ScheduleTask(*ptok, task);
+                auto ptok = sched.CreateProducer();
+                // Track the pthread id of the worker (POSIX only) so we can cancel it if preemption is enabled
+#if defined(__unix__) || defined(__APPLE__)
+                std::atomic<pthread_t> worker_tid {};
+                auto task = make_shared_ptr<UdfSandboxTask>(expr, arguments, *state, result, worker_done,
+                                                            worker_exception, worker_tid);
+#else
+                auto task = make_shared_ptr<UdfSandboxTask>(expr, arguments, *state, result, worker_done,
+                                                            worker_exception);
+#endif
+                // Do not persist a raw pointer to ptok on the task to avoid dangling references
+                sched.ScheduleTask(*ptok, task);
 
 				// Poll loop: wait for completion, interrupt or timeout
 				while (!worker_done.load(std::memory_order_acquire)) {
 					// Check interrupt from outside
 					if (GetContext().IsInterrupted()) {
+						std::fprintf(stderr, "UDF execution interrupted\n");
 						break; // will handle as interrupt below
-					}
-					// Enforce timeout if configured
-					if (timeout_ms > 0 && steady_clock::now() >= deadline) {
-						timed_out = true;
-						// Trigger cooperative cancel
-						std::fprintf(stderr, "UDF timeout reached, interrupting worker thread\n");
-						GetContext().Interrupt();
-						break;
 					}
 					std::this_thread::sleep_for(std::chrono::milliseconds(1));
 				}
 
-				// If we broke because of interrupt/timeout, keep waiting until worker finishes to keep memory valid
-				if ((timed_out || GetContext().IsInterrupted()) && !worker_done.load(std::memory_order_acquire)) {
-					// Give the thread a grace period to finish
-					auto abort_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
-					while (!worker_done.load(std::memory_order_acquire)) {
-						if (std::chrono::steady_clock::now() >= abort_deadline) {
-							// If the thread hasn't finished after the grace period, abort
-							throw FatalException(
-							    "UDF execution did not respond to interrupt signal - operation aborted");
-						}
-						std::this_thread::sleep_for(std::chrono::milliseconds(1));
-					}
-				}
+                // If we broke because of interrupt/timeout, attempt to preemptively terminate the worker
+                // (actual thread preemption only possible on POSIX when enabled via env flag), otherwise keep
+                // waiting until worker finishes to keep memory valid
+                if ((GetContext().IsInterrupted()) && !worker_done.load(std::memory_order_acquire)) {
+                    bool preempt_attempted = false;
+                    // Env flag controls preemption preference on all platforms
+                    const char *preempt_env = std::getenv("DUCKDB_UDF_PREEMPT");
+                    const bool preempt_enabled = preempt_env && (StringUtil::CIEquals(preempt_env, "1") ||
+                                                                StringUtil::CIEquals(preempt_env, "true") ||
+                                                                StringUtil::CIEquals(preempt_env, "on"));
+#if defined(__unix__) || defined(__APPLE__)
+                    if (preempt_enabled) {
+                        // Try to cancel the worker thread asynchronously. This is unsafe in general C++ code and
+                        // should only be used as an experimental feature for uncooperative external UDFs.
+                        auto tid_val = worker_tid.load(std::memory_order_acquire);
+                        if (tid_val) {
+                            preempt_attempted = true;
+                            std::fprintf(stderr,
+                                         "[UDF Sandbox] Preemptive cancel requested for worker thread (pthread_t=%p)\n",
+                                         (void *)tid_val);
+                            (void)pthread_cancel(tid_val);
+                        }
+                    }
+#endif
+                    // Wait for completion (either normal, cooperative, or via cancellation cleanup)
+                    auto abort_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+                    while (!worker_done.load(std::memory_order_acquire)) {
+                        if (std::chrono::steady_clock::now() >= abort_deadline) {
+                            if (preempt_attempted) {
+                                // We tried to cancel but it is still not observed as done; report fatal
+                                throw FatalException("UDF execution did not terminate after preemptive cancel");
+                            }
+                            // No preemption or not supported: fail hard to prevent use-after-free
+                            throw FatalException(
+                                "UDF execution did not respond to interrupt signal - aborting the connection "
+								"but worker thread is still working");
+                        }
+                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    }
+                    // If preemption was attempted, our cancellation likely destroyed one scheduler worker thread.
+                    // Proactively request the scheduler to relaunch background threads to restore pool size.
+                    if (preempt_attempted) {
+                        std::fprintf(stderr, "[UDF Sandbox] Requesting scheduler to relaunch threads after cancel\n");
+                        sched.RelaunchThreads();
+                    }
+                }
 
 				if (worker_exception) {
 					std::rethrow_exception(worker_exception);
-				}
-				if (timed_out) {
-					throw InterruptException();
-				}
-				if (GetContext().IsInterrupted()) {
-					throw InterruptException();
 				}
 			}
 		} else {
