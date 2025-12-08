@@ -3,6 +3,8 @@
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/common/types/uuid.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/parallel/task_scheduler.hpp"
+#include "duckdb/parallel/task.hpp"
 
 // Optional symbol provenance check (POSIX)
 #if defined(__unix__) || defined(__APPLE__)
@@ -10,6 +12,7 @@
 #endif
 
 #include <atomic>
+#include <cassert>
 #include <chrono>
 #include <thread>
 #include <cstring>
@@ -198,11 +201,12 @@ void ExpressionExecutor::Execute(const BoundFunctionExpression &expr, Expression
 		// Optional sandboxing of UDF execution: enabled via environment variable DUCKDB_UDF_SANDBOX=1
 		// IMPORTANT: Only apply to external (non-built-in) scalar functions. Built-ins are never sandboxed.
 		// Strategy (POSIX): use dladdr to compare the shared object of the callback against a known DuckDB symbol.
-		bool sandbox_should_probe = false;
+		bool sandbox_should_probe = true;
 		if (HasContext()) {
 			const char *env = std::getenv("DUCKDB_UDF_SANDBOX");
 			const bool sandbox_env = env && (StringUtil::CIEquals(env, "1") || StringUtil::CIEquals(env, "true") ||
 			                                 StringUtil::CIEquals(env, "on"));
+			std::fprintf(stderr, "DUCKDB_UDF_SANDBOX=%s\n", sandbox_env ? "enabled" : "disabled");
 			if (sandbox_env) {
 #if defined(__unix__) || defined(__APPLE__)
 				// Identify external functions by shared object provenance
@@ -230,42 +234,120 @@ void ExpressionExecutor::Execute(const BoundFunctionExpression &expr, Expression
 			}
 		}
 
+		std::fprintf(stderr, "Sandboxing UDF execution: %s\n", sandbox_should_probe ? "enabled" : "disabled");
 		if (sandbox_should_probe) {
-			// Thread-based probe: run the UDF once in a separate thread to allow the main thread
-			// to observe interrupts. Note: threads cannot be forcibly terminated portably.
-			// On interrupt, we join the worker to avoid use-after-free, then throw InterruptException.
+			// Pool-based probe: schedule the UDF on DuckDB's TaskScheduler so it runs on a pooled worker thread.
+			// We still cannot forcibly terminate a running thread; cancellation is cooperative via
+			// ClientContext::Interrupt().
+			using namespace std::chrono;
+
 			std::atomic<bool> worker_done {false};
 			std::exception_ptr worker_exception = nullptr;
 
-			// Launch worker thread: execute the real function into `result` exactly once
-			std::thread worker([&] {
+			// Optional timeout in milliseconds via DUCKDB_UDF_TIMEOUT_MS
+			int64_t timeout_ms = -1;
+			if (const char *timeout_env = std::getenv("DUCKDB_UDF_TIMEOUT_MS")) {
 				try {
-					// Execute the UDF once, writing directly into the actual result vector
-					expr.function.GetFunctionCallback()(arguments, *state, result);
-				} catch (...) {
-					worker_exception = std::current_exception();
-				}
-				worker_done.store(true, std::memory_order_release);
-			});
-
-			// Poll loop: wait for completion or interrupt
-			while (!worker_done.load(std::memory_order_acquire)) {
-				if (HasContext() && GetContext().IsInterrupted()) {
-					// Cooperative cancellation only: wait for the worker to finish to keep memory safe
-					worker.join();
-					if (worker_exception) {
-						std::rethrow_exception(worker_exception);
+					// parse as signed 64-bit integer; ignore invalid values
+					timeout_ms = std::stoll(timeout_env);
+					if (timeout_ms < 0) {
+						timeout_ms = -1;
 					}
+				} catch (...) {
+					timeout_ms = -1;
+				}
+			}
+			std::fprintf(stderr, "UDF timeout: %lld ms\n", timeout_ms);
+			auto start_ts = steady_clock::now();
+			auto deadline = timeout_ms > 0 ? start_ts + milliseconds(timeout_ms) : time_point<steady_clock>();
+			bool timed_out = false;
+
+			// Schedule task on the global scheduler
+			if (!HasContext()) {
+				// No context: fall back to direct execution
+				std::fprintf(stderr, "No context: executing UDF directly\n");
+				expr.function.GetFunctionCallback()(arguments, *state, result);
+			} else {
+				std::fprintf(stderr, "Context available: scheduling UDF on scheduler\n");
+				auto &sched = TaskScheduler::GetScheduler(GetContext());
+
+				// Define a minimal task that runs the UDF once
+				class UdfSandboxTask : public Task {
+				public:
+					UdfSandboxTask(const BoundFunctionExpression &expr_p, DataChunk &args_p, ExpressionState &state_p,
+					               Vector &result_p, std::atomic<bool> &done_p, std::exception_ptr &ex_p)
+					    : expr(expr_p), args(args_p), state(state_p), result(result_p), done(done_p), ex(ex_p) {
+					}
+					TaskExecutionResult Execute(TaskExecutionMode) override {
+						std::fprintf(stderr, "Executing UDF sandboxed task\n");
+						std::fprintf(stderr, "Thread: %lu\n", std::this_thread::get_id());
+						try {
+							expr.function.GetFunctionCallback()(args, state, result);
+						} catch (...) {
+							ex = std::current_exception();
+						}
+						done.store(true, std::memory_order_release);
+						return TaskExecutionResult::TASK_FINISHED;
+					}
+					string TaskType() const override {
+						return "UdfSandboxTask";
+					}
+
+				private:
+					const BoundFunctionExpression &expr;
+					DataChunk &args;
+					ExpressionState &state;
+					Vector &result;
+					std::atomic<bool> &done;
+					std::exception_ptr &ex;
+				};
+
+				auto ptok = sched.CreateProducer();
+				auto task =
+				    make_shared_ptr<UdfSandboxTask>(expr, arguments, *state, result, worker_done, worker_exception);
+				// Do not persist a raw pointer to ptok on the task to avoid dangling references
+				sched.ScheduleTask(*ptok, task);
+
+				// Poll loop: wait for completion, interrupt or timeout
+				while (!worker_done.load(std::memory_order_acquire)) {
+					// Check interrupt from outside
+					if (GetContext().IsInterrupted()) {
+						break; // will handle as interrupt below
+					}
+					// Enforce timeout if configured
+					if (timeout_ms > 0 && steady_clock::now() >= deadline) {
+						timed_out = true;
+						// Trigger cooperative cancel
+						std::fprintf(stderr, "UDF timeout reached, interrupting worker thread\n");
+						GetContext().Interrupt();
+						break;
+					}
+					std::this_thread::sleep_for(std::chrono::milliseconds(1));
+				}
+
+				// If we broke because of interrupt/timeout, keep waiting until worker finishes to keep memory valid
+				if ((timed_out || GetContext().IsInterrupted()) && !worker_done.load(std::memory_order_acquire)) {
+					// Give the thread a grace period to finish
+					auto abort_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+					while (!worker_done.load(std::memory_order_acquire)) {
+						if (std::chrono::steady_clock::now() >= abort_deadline) {
+							// If the thread hasn't finished after the grace period, abort
+							throw FatalException(
+							    "UDF execution did not respond to interrupt signal - operation aborted");
+						}
+						std::this_thread::sleep_for(std::chrono::milliseconds(1));
+					}
+				}
+
+				if (worker_exception) {
+					std::rethrow_exception(worker_exception);
+				}
+				if (timed_out) {
 					throw InterruptException();
 				}
-				std::this_thread::sleep_for(std::chrono::milliseconds(1));
-			}
-
-			// Ensure thread is finished
-			worker.join();
-
-			if (worker_exception) {
-				std::rethrow_exception(worker_exception);
+				if (GetContext().IsInterrupted()) {
+					throw InterruptException();
+				}
 			}
 		} else {
 			// Sandbox disabled or not applicable on this platform
