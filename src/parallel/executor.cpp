@@ -17,9 +17,20 @@
 #include "duckdb/parallel/pipeline_prepare_finish_event.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
 #include "duckdb/parallel/thread_context.hpp"
-
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
+
+namespace {
+static bool DuckDBDebugStepsEnabled_Executor() {
+    static int enabled = []() {
+        const char *v = std::getenv("DUCKDB_DEBUG_STEPS");
+        return v && v[0] != '\0' && v[0] != '0' ? 1 : 0;
+    }();
+    return enabled != 0;
+}
+}
 
 namespace duckdb {
 
@@ -374,8 +385,16 @@ void Executor::VerifyPipelines() {
 }
 
 void Executor::Initialize(PhysicalOperator &plan) {
+    if (DuckDBDebugStepsEnabled_Executor()) {
+        std::fprintf(stderr, "[DuckDBDebug] Executor::Initialize - start\n");
+        std::fflush(stderr);
+    }
 	Reset();
 	InitializeInternal(plan);
+    if (DuckDBDebugStepsEnabled_Executor()) {
+        std::fprintf(stderr, "[DuckDBDebug] Executor::Initialize - done\n");
+        std::fflush(stderr);
+    }
 }
 
 void Executor::InitializeInternal(PhysicalOperator &plan) {
@@ -389,6 +408,10 @@ void Executor::InitializeInternal(PhysicalOperator &plan) {
 		this->producer = scheduler.CreateProducer();
 
 		// build and ready the pipelines
+		if (DuckDBDebugStepsEnabled_Executor()) {
+			std::fprintf(stderr, "[DuckDBDebug] Executor::InitializeInternal - building pipelines\n");
+			std::fflush(stderr);
+		}
 		PipelineBuildState state;
 		auto root_pipeline = make_shared_ptr<MetaPipeline>(*this, state, nullptr);
 		root_pipeline->Build(*physical_plan);
@@ -413,10 +436,25 @@ void Executor::InitializeInternal(PhysicalOperator &plan) {
 
 		// collect all pipelines from the root pipelines (recursively) for the progress bar and verify them
 		root_pipeline->GetPipelines(pipelines, true);
+		if (DuckDBDebugStepsEnabled_Executor()) {
+			std::fprintf(stderr,
+			            "[DuckDBDebug] Executor::InitializeInternal - pipelines built (root_pipelines=%llu, total_pipelines=%llu)\n",
+			            (unsigned long long)root_pipelines.size(), (unsigned long long)pipelines.size());
+			std::fflush(stderr);
+		}
 
 		// finally, verify and schedule
 		VerifyPipelines();
+		if (DuckDBDebugStepsEnabled_Executor()) {
+			std::fprintf(stderr, "[DuckDBDebug] Executor::InitializeInternal - scheduling events (meta=%llu)\n",
+			            (unsigned long long)to_schedule.size());
+			std::fflush(stderr);
+		}
 		ScheduleEvents(to_schedule);
+		if (DuckDBDebugStepsEnabled_Executor()) {
+			std::fprintf(stderr, "[DuckDBDebug] Executor::InitializeInternal - schedule submitted\n");
+			std::fflush(stderr);
+		}
 	}
 }
 
@@ -443,16 +481,25 @@ void Executor::CancelTasks() {
 }
 
 void Executor::WorkOnTasks() {
-	auto &scheduler = TaskScheduler::GetScheduler(context);
+    auto &scheduler = TaskScheduler::GetScheduler(context);
 
-	shared_ptr<Task> task_from_producer;
-	while (scheduler.GetTaskFromProducer(*producer, task_from_producer)) {
-		auto res = task_from_producer->Execute(TaskExecutionMode::PROCESS_ALL);
-		if (res == TaskExecutionResult::TASK_BLOCKED) {
-			task_from_producer->Deschedule();
-		}
-		task_from_producer.reset();
-	}
+    shared_ptr<Task> task_from_producer;
+    while (scheduler.GetTaskFromProducer(*producer, task_from_producer)) {
+        if (DuckDBDebugStepsEnabled_Executor()) {
+            std::fprintf(stderr, "[DuckDBDebug] Executor::WorkOnTasks - got task %p\n", (void *)task_from_producer.get());
+            std::fflush(stderr);
+        }
+        auto res = task_from_producer->Execute(TaskExecutionMode::PROCESS_ALL);
+        if (DuckDBDebugStepsEnabled_Executor()) {
+            std::fprintf(stderr, "[DuckDBDebug] Executor::WorkOnTasks - task %p executed (res=%d)\n",
+                        (void *)task_from_producer.get(), (int)res);
+            std::fflush(stderr);
+        }
+        if (res == TaskExecutionResult::TASK_BLOCKED) {
+            task_from_producer->Deschedule();
+        }
+        task_from_producer.reset();
+    }
 }
 
 void Executor::SignalTaskRescheduled(lock_guard<mutex> &) {
@@ -461,24 +508,40 @@ void Executor::SignalTaskRescheduled(lock_guard<mutex> &) {
 
 void Executor::WaitForTask() {
 #ifndef DUCKDB_NO_THREADS
-	static constexpr std::chrono::microseconds WAIT_TIME_MS = std::chrono::microseconds(WAIT_TIME * 1000);
-	auto begin = std::chrono::high_resolution_clock::now();
-	std::unique_lock<mutex> l(executor_lock);
-	auto end = std::chrono::high_resolution_clock::now();
-	auto dur = end - begin;
-	auto ms = NumericCast<idx_t>(std::chrono::duration_cast<std::chrono::microseconds>(dur).count());
-	if (to_be_rescheduled_tasks.empty()) {
-		blocked_thread_time += ms;
-		return;
-	}
-	if (ResultCollectorIsBlocked()) {
-		// If the result collector is blocked, it won't get unblocked until the connection calls Fetch
-		blocked_thread_time += ms;
-		return;
-	}
+    if (DuckDBDebugStepsEnabled_Executor()) {
+        std::fprintf(stderr, "[DuckDBDebug] Executor::WaitForTask - enter\n");
+        std::fflush(stderr);
+    }
+    static constexpr std::chrono::microseconds WAIT_TIME_MS = std::chrono::microseconds(WAIT_TIME * 1000);
+    auto begin = std::chrono::high_resolution_clock::now();
+    std::unique_lock<mutex> l(executor_lock);
+    auto end = std::chrono::high_resolution_clock::now();
+    auto dur = end - begin;
+    auto ms = NumericCast<idx_t>(std::chrono::duration_cast<std::chrono::microseconds>(dur).count());
+    if (to_be_rescheduled_tasks.empty()) {
+        blocked_thread_time += ms;
+        if (DuckDBDebugStepsEnabled_Executor()) {
+            std::fprintf(stderr, "[DuckDBDebug] Executor::WaitForTask - no tasks to reschedule, returning\n");
+            std::fflush(stderr);
+        }
+        return;
+    }
+    if (ResultCollectorIsBlocked()) {
+        // If the result collector is blocked, it won't get unblocked until the connection calls Fetch
+        blocked_thread_time += ms;
+        if (DuckDBDebugStepsEnabled_Executor()) {
+            std::fprintf(stderr, "[DuckDBDebug] Executor::WaitForTask - result collector blocked, returning\n");
+            std::fflush(stderr);
+        }
+        return;
+    }
 
-	blocked_thread_time += ms + WAIT_TIME_MS.count();
-	task_reschedule.wait_for(l, WAIT_TIME_MS);
+    blocked_thread_time += ms + WAIT_TIME_MS.count();
+    task_reschedule.wait_for(l, WAIT_TIME_MS);
+    if (DuckDBDebugStepsEnabled_Executor()) {
+        std::fprintf(stderr, "[DuckDBDebug] Executor::WaitForTask - wakeup\n");
+        std::fflush(stderr);
+    }
 #endif
 }
 
@@ -540,16 +603,27 @@ bool Executor::ExecutionIsFinished() {
 }
 
 PendingExecutionResult Executor::ExecuteTask(bool dry_run) {
-	// Only executor should return NO_TASKS_AVAILABLE
-	D_ASSERT(execution_result != PendingExecutionResult::NO_TASKS_AVAILABLE);
-	if (execution_result != PendingExecutionResult::RESULT_NOT_READY && ExecutionIsFinished()) {
-		return execution_result;
-	}
-	// check if there are any incomplete pipelines
-	auto &scheduler = TaskScheduler::GetScheduler(context);
-	if (completed_pipelines < total_pipelines) {
-		// there are! if we don't already have a task, fetch one
-		auto current_task = task.get();
+    if (DuckDBDebugStepsEnabled_Executor()) {
+        std::fprintf(stderr, "[DuckDBDebug] Executor::ExecuteTask - enter (dry_run=%s, completed=%llu/%llu)\n",
+                    dry_run ? "true" : "false", (unsigned long long)completed_pipelines,
+                    (unsigned long long)total_pipelines);
+        std::fflush(stderr);
+    }
+    // Only executor should return NO_TASKS_AVAILABLE
+    D_ASSERT(execution_result != PendingExecutionResult::NO_TASKS_AVAILABLE);
+    if (execution_result != PendingExecutionResult::RESULT_NOT_READY && ExecutionIsFinished()) {
+        if (DuckDBDebugStepsEnabled_Executor()) {
+            std::fprintf(stderr, "[DuckDBDebug] Executor::ExecuteTask - already finished (status=%d)\n",
+                        (int)execution_result);
+            std::fflush(stderr);
+        }
+        return execution_result;
+    }
+    // check if there are any incomplete pipelines
+    auto &scheduler = TaskScheduler::GetScheduler(context);
+    if (completed_pipelines < total_pipelines) {
+        // there are! if we don't already have a task, fetch one
+        auto current_task = task.get();
 		if (dry_run) {
 			// Pretend we have no task, we don't want to execute anything
 			current_task = nullptr;

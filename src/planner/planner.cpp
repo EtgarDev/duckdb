@@ -16,6 +16,18 @@
 #include "duckdb/main/attached_database.hpp"
 
 #include "duckdb/planner/subquery/flatten_dependent_join.hpp"
+#include <cstdio>
+#include <cstdlib>
+
+namespace {
+static bool DuckDBDebugStepsEnabled_Planner() {
+    static int enabled = []() {
+        const char *v = std::getenv("DUCKDB_DEBUG_STEPS");
+        return v && v[0] != '\0' && v[0] != '0' ? 1 : 0;
+    }();
+    return enabled != 0;
+}
+}
 
 namespace duckdb {
 
@@ -32,8 +44,12 @@ static void CheckTreeDepth(const LogicalOperator &op, idx_t max_depth, idx_t dep
 }
 
 void Planner::CreatePlan(SQLStatement &statement) {
-	auto &profiler = QueryProfiler::Get(context);
-	auto parameter_count = statement.named_param_map.size();
+    if (DuckDBDebugStepsEnabled_Planner()) {
+        std::fprintf(stderr, "[DuckDBDebug] Enter Planner::CreatePlan (binding starts)\n");
+        std::fflush(stderr);
+    }
+    auto &profiler = QueryProfiler::Get(context);
+    auto parameter_count = statement.named_param_map.size();
 
 	BoundParameterMap bound_parameters(parameter_data);
 
@@ -43,7 +59,11 @@ void Planner::CreatePlan(SQLStatement &statement) {
 		profiler.StartPhase(MetricType::PLANNER_BINDING);
 		binder->SetParameters(bound_parameters);
 		auto bound_statement = binder->Bind(statement);
-		profiler.EndPhase();
+  profiler.EndPhase();
+  if (DuckDBDebugStepsEnabled_Planner()) {
+      std::fprintf(stderr, "[DuckDBDebug] Planner::CreatePlan - binding finished, logical plan created\n");
+      std::fflush(stderr);
+  }
 
 		this->names = bound_statement.names;
 		this->types = bound_statement.types;
@@ -86,7 +106,20 @@ void Planner::CreatePlan(SQLStatement &statement) {
 	this->properties.parameter_count = parameter_count;
 	properties.bound_all_parameters = !bound_parameters.rebind && parameters_resolved;
 
-	Planner::VerifyPlan(context, plan, bound_parameters.GetParametersPtr());
+ if (DuckDBDebugStepsEnabled_Planner()) {
+     std::fprintf(stderr, "[DuckDBDebug] Planner::CreatePlan - verifying logical plan\n");
+     std::fflush(stderr);
+ }
+ Planner::VerifyPlan(context, plan, bound_parameters.GetParametersPtr());
+ if (DuckDBDebugStepsEnabled_Planner()) {
+     std::fprintf(stderr, "[DuckDBDebug] Planner::CreatePlan - verification complete\n");
+     std::fflush(stderr);
+ }
+
+	if (DuckDBDebugStepsEnabled_Planner()) {
+		std::fprintf(stderr, "[DuckDBDebug] Planner::CreatePlan - setting up parameter map\n");
+		std::fflush(stderr);
+	}
 
 	// set up a map of parameter number -> value entries
 	for (auto &kv : bound_parameters.GetParameters()) {
@@ -99,6 +132,11 @@ void Planner::CreatePlan(SQLStatement &statement) {
 		}
 		param->SetValue(Value(param->return_type));
 		value_map[identifier] = param;
+	}
+
+	if (DuckDBDebugStepsEnabled_Planner()) {
+		std::fprintf(stderr, "[DuckDBDebug] Planner::CreatePlan - parameter map setup complete\n");
+		std::fflush(stderr);
 	}
 }
 

@@ -25,6 +25,18 @@
 #include "duckdb/planner/tableref/list.hpp"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+
+namespace {
+static bool DuckDBDebugStepsEnabled() {
+    static int enabled = []() {
+        const char *v = std::getenv("DUCKDB_DEBUG_STEPS");
+        return v && v[0] != '\0' && v[0] != '0' ? 1 : 0;
+    }();
+    return enabled != 0;
+}
+}
 
 namespace duckdb {
 
@@ -74,7 +86,11 @@ BoundStatement Binder::BindWithCTE(T &statement) {
 }
 
 BoundStatement Binder::Bind(SQLStatement &statement) {
-	switch (statement.type) {
+    if (DuckDBDebugStepsEnabled()) {
+        std::fprintf(stderr, "[DuckDBDebug] Enter Binder::Bind (type=%s)\n", StatementTypeToString(statement.type).c_str());
+        std::fflush(stderr);
+    }
+    switch (statement.type) {
 	case StatementType::SELECT_STATEMENT:
 		return Bind(statement.Cast<SelectStatement>());
 	case StatementType::INSERT_STATEMENT:
@@ -127,10 +143,10 @@ BoundStatement Binder::Bind(SQLStatement &statement) {
 		return Bind(statement.Cast<UpdateExtensionsStatement>());
 	case StatementType::MERGE_INTO_STATEMENT:
 		return BindWithCTE(statement.Cast<MergeIntoStatement>());
-	default: // LCOV_EXCL_START
-		throw NotImplementedException("Unimplemented statement type \"%s\" for Bind",
-		                              StatementTypeToString(statement.type));
-	} // LCOV_EXCL_STOP
+    default: // LCOV_EXCL_START
+        throw NotImplementedException("Unimplemented statement type \"%s\" for Bind",
+                                      StatementTypeToString(statement.type));
+    } // LCOV_EXCL_STOP
 }
 
 BoundStatement Binder::Bind(QueryNode &node) {

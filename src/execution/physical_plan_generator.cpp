@@ -12,6 +12,19 @@
 #include "duckdb/execution/operator/helper/physical_verify_vector.hpp"
 #include "duckdb/main/settings.hpp"
 
+#include <cstdio>
+#include <cstdlib>
+
+namespace {
+static bool DuckDBDebugStepsEnabled_PhysGen() {
+    static int enabled = []() {
+        const char *v = std::getenv("DUCKDB_DEBUG_STEPS");
+        return v && v[0] != '\0' && v[0] != '0' ? 1 : 0;
+    }();
+    return enabled != 0;
+}
+}
+
 namespace duckdb {
 
 PhysicalPlanGenerator::PhysicalPlanGenerator(ClientContext &context) : context(context) {
@@ -21,12 +34,26 @@ PhysicalPlanGenerator::~PhysicalPlanGenerator() {
 }
 
 unique_ptr<PhysicalPlan> PhysicalPlanGenerator::Plan(unique_ptr<LogicalOperator> op) {
+    if (DuckDBDebugStepsEnabled_PhysGen()) {
+        std::fprintf(stderr, "[DuckDBDebug] Enter PhysicalPlanGenerator::Plan\n");
+        std::fflush(stderr);
+    }
 	auto &plan = ResolveAndPlan(std::move(op));
 	plan.Verify();
-	return std::move(physical_plan);
+    if (DuckDBDebugStepsEnabled_PhysGen()) {
+        std::fprintf(stderr, "[DuckDBDebug] PhysicalPlanGenerator::Plan - complete (root=%d)\n",
+                     (int)plan.type);
+        std::fflush(stderr);
+    }
+    return std::move(physical_plan);
 }
 
 PhysicalOperator &PhysicalPlanGenerator::ResolveAndPlan(unique_ptr<LogicalOperator> op) {
+    if (DuckDBDebugStepsEnabled_PhysGen()) {
+        std::fprintf(stderr, "[DuckDBDebug] Enter PhysicalPlanGenerator::ResolveAndPlan (logical_root=%d)\n",
+                     (int)op->type);
+        std::fflush(stderr);
+    }
 	auto &profiler = QueryProfiler::Get(context);
 
 	// Resolve the types of each operator.
@@ -44,6 +71,11 @@ PhysicalOperator &PhysicalPlanGenerator::ResolveAndPlan(unique_ptr<LogicalOperat
 	profiler.StartPhase(MetricType::PHYSICAL_PLANNER_CREATE_PLAN);
 	physical_plan = PlanInternal(*op);
 	profiler.EndPhase();
+
+    if (DuckDBDebugStepsEnabled_PhysGen()) {
+        std::fprintf(stderr, "[DuckDBDebug] PhysicalPlanGenerator::ResolveAndPlan - physical plan created\n");
+        std::fflush(stderr);
+    }
 
 	// Return a reference to the root of this plan.
 	return physical_plan->Root();

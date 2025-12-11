@@ -40,6 +40,18 @@
 #include "duckdb/optimizer/common_subplan_optimizer.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/planner.hpp"
+#include <cstdio>
+#include <cstdlib>
+
+namespace {
+static bool DuckDBDebugStepsEnabled_Optimizer() {
+    static int enabled = []() {
+        const char *v = std::getenv("DUCKDB_DEBUG_STEPS");
+        return v && v[0] != '\0' && v[0] != '0' ? 1 : 0;
+    }();
+    return enabled != 0;
+}
+}
 
 namespace duckdb {
 
@@ -310,6 +322,10 @@ void Optimizer::RunBuiltInOptimizers() {
 }
 
 unique_ptr<LogicalOperator> Optimizer::Optimize(unique_ptr<LogicalOperator> plan_p) {
+    if (DuckDBDebugStepsEnabled_Optimizer()) {
+        std::fprintf(stderr, "[DuckDBDebug] Enter Optimizer::Optimize\n");
+        std::fflush(stderr);
+    }
 	Verify(*plan_p);
 
 	this->plan = std::move(plan_p);
@@ -336,7 +352,11 @@ unique_ptr<LogicalOperator> Optimizer::Optimize(unique_ptr<LogicalOperator> plan
 
 	Planner::VerifyPlan(context, plan);
 
-	return std::move(plan);
+    if (DuckDBDebugStepsEnabled_Optimizer()) {
+        std::fprintf(stderr, "[DuckDBDebug] Optimizer::Optimize - complete\n");
+        std::fflush(stderr);
+    }
+    return std::move(plan);
 }
 
 unique_ptr<Expression> Optimizer::BindScalarFunction(const string &name, unique_ptr<Expression> c1) {

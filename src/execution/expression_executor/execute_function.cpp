@@ -2,6 +2,18 @@
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/common/types/uuid.hpp"
+#include <cstdio>
+#include <cstdlib>
+
+namespace {
+static bool DuckDBDebugStepsEnabled_ExecFunc() {
+    static int enabled = []() {
+        const char *v = std::getenv("DUCKDB_DEBUG_STEPS");
+        return v && v[0] != '\0' && v[0] != '0' ? 1 : 0;
+    }();
+    return enabled != 0;
+}
+}
 
 namespace duckdb {
 
@@ -71,7 +83,13 @@ bool ExecuteFunctionState::TryExecuteDictionaryExpression(const BoundFunctionExp
 		return false; // Dictionary is too large, bail
 	}
 
-	if (!output_dictionary || current_input_dictionary_id != input_dictionary_id) {
+    if (!output_dictionary || current_input_dictionary_id != input_dictionary_id) {
+        if (DuckDBDebugStepsEnabled_ExecFunc()) {
+            std::fprintf(stderr,
+                         "[DuckDBDebug] ExecuteFunctionState::TryExecuteDictionaryExpression - building dictionary (size=%llu) for function '%s'\n",
+                         (unsigned long long)input_dictionary_size, expr.function.name.c_str());
+            std::fflush(stderr);
+        }
 		// We haven't seen this dictionary before
 		const auto chunk_fill_ratio = static_cast<double>(args.size()) / STANDARD_VECTOR_SIZE;
 		if (input_dictionary_size > STANDARD_VECTOR_SIZE && chunk_fill_ratio <= CHUNK_FILL_RATIO_THRESHOLD) {
@@ -108,6 +126,13 @@ bool ExecuteFunctionState::TryExecuteDictionaryExpression(const BoundFunctionExp
 			expr.function.GetFunctionCallback()(input_chunk, state, output_intermediate);
 			VectorOperations::Copy(output_intermediate, output_dictionary->data, count, 0, offset);
 		}
+	} else {
+        if (DuckDBDebugStepsEnabled_ExecFunc()) {
+            std::fprintf(stderr,
+                         "[DuckDBDebug] ExecuteFunctionState::TryExecuteDictionaryExpression - reusing dictionary (size=%llu) for function '%s'\n",
+                         (unsigned long long)input_dictionary_size, expr.function.name.c_str());
+            std::fflush(stderr);
+        }
 	}
 
 	// Result references the dictionary
@@ -165,6 +190,12 @@ static void VerifyNullHandling(const BoundFunctionExpression &expr, DataChunk &a
 
 void ExpressionExecutor::Execute(const BoundFunctionExpression &expr, ExpressionState *state,
                                  const SelectionVector *sel, idx_t count, Vector &result) {
+    if (DuckDBDebugStepsEnabled_ExecFunc()) {
+        std::fprintf(stderr,
+                     "[DuckDBDebug] Enter ExpressionExecutor::Execute for function '%s' (rows=%llu)\n",
+                     expr.function.name.c_str(), (unsigned long long)count);
+        std::fflush(stderr);
+    }
 	state->intermediate_chunk.Reset();
 	auto &arguments = state->intermediate_chunk;
 	if (!state->types.empty()) {
@@ -183,12 +214,25 @@ void ExpressionExecutor::Execute(const BoundFunctionExpression &expr, Expression
 
 	D_ASSERT(expr.function.HasFunctionCallback());
 	auto &execute_function_state = state->Cast<ExecuteFunctionState>();
-	if (!execute_function_state.TryExecuteDictionaryExpression(expr, arguments, *state, result)) {
+	bool used_dictionary_opt = execute_function_state.TryExecuteDictionaryExpression(expr, arguments, *state, result);
+	if (DuckDBDebugStepsEnabled_ExecFunc()) {
+        std::fprintf(stderr,
+                     "[DuckDBDebug] ExpressionExecutor::Execute - dictionary_opt=%s for function '%s'\n",
+                     used_dictionary_opt ? "true" : "false", expr.function.name.c_str());
+        std::fflush(stderr);
+    }
+	if (!used_dictionary_opt) {
 		expr.function.GetFunctionCallback()(arguments, *state, result);
 	}
 
 	VerifyNullHandling(expr, arguments, result);
 	D_ASSERT(result.GetType() == expr.return_type);
+    if (DuckDBDebugStepsEnabled_ExecFunc()) {
+        std::fprintf(stderr,
+                     "[DuckDBDebug] Exit ExpressionExecutor::Execute for function '%s'\n",
+                     expr.function.name.c_str());
+        std::fflush(stderr);
+    }
 }
 
 } // namespace duckdb

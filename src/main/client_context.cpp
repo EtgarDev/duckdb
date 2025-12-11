@@ -52,6 +52,18 @@
 #include "duckdb/logging/log_manager.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/main/result_set_manager.hpp"
+#include <cstdio>
+#include <cstdlib>
+
+namespace {
+static bool DuckDBDebugStepsEnabled_Client() {
+    static int enabled = []() {
+        const char *v = std::getenv("DUCKDB_DEBUG_STEPS");
+        return v && v[0] != '\0' && v[0] != '0' ? 1 : 0;
+    }();
+    return enabled != 0;
+}
+}
 
 namespace duckdb {
 
@@ -363,61 +375,100 @@ shared_ptr<PreparedStatementData> ClientContext::CreatePreparedStatementInternal
                                                                                  const string &query,
                                                                                  unique_ptr<SQLStatement> statement,
                                                                                  PendingQueryParameters parameters) {
-	StatementType statement_type = statement->type;
-	auto result = make_shared_ptr<PreparedStatementData>(statement_type);
+    StatementType statement_type = statement->type;
+    auto result = make_shared_ptr<PreparedStatementData>(statement_type);
 
-	auto &profiler = QueryProfiler::Get(*this);
-	profiler.StartQuery(query, IsExplainAnalyze(statement.get()), true);
-	profiler.StartPhase(MetricType::PLANNER);
-	Planner logical_planner(*this);
-	if (parameters.parameters) {
-		auto &parameter_values = *parameters.parameters;
-		for (auto &value : parameter_values) {
-			logical_planner.parameter_data.emplace(value.first, BoundParameterData(value.second));
-		}
-	}
+    auto &profiler = QueryProfiler::Get(*this);
+    profiler.StartQuery(query, IsExplainAnalyze(statement.get()), true);
+    if (DuckDBDebugStepsEnabled_Client()) {
+        std::fprintf(stderr, "[DuckDBDebug] ClientContext::CreatePreparedStatementInternal - enter (type=%s)\n",
+                     StatementTypeToString(statement->type).c_str());
+        std::fflush(stderr);
+    }
+    profiler.StartPhase(MetricType::PLANNER);
+    Planner logical_planner(*this);
+    if (parameters.parameters) {
+        auto &parameter_values = *parameters.parameters;
+        for (auto &value : parameter_values) {
+            logical_planner.parameter_data.emplace(value.first, BoundParameterData(value.second));
+        }
+    }
 
-	logical_planner.CreatePlan(std::move(statement));
-	D_ASSERT(logical_planner.plan || !logical_planner.properties.bound_all_parameters);
-	profiler.EndPhase();
+    logical_planner.CreatePlan(std::move(statement));
+    D_ASSERT(logical_planner.plan || !logical_planner.properties.bound_all_parameters);
+    if (DuckDBDebugStepsEnabled_Client()) {
+        std::fprintf(stderr, "[DuckDBDebug] ClientContext::CreatePreparedStatementInternal - ending phase PLANNER\n");
+        std::fflush(stderr);
+    }
+    profiler.EndPhase();
+    if (DuckDBDebugStepsEnabled_Client()) {
+        std::fprintf(stderr, "[DuckDBDebug] ClientContext::CreatePreparedStatementInternal - logical plan ready\n");
+        std::fflush(stderr);
+    }
 
-	auto logical_plan = std::move(logical_planner.plan);
-	// extract the result column names from the plan
-	result->properties = logical_planner.properties;
-	result->names = logical_planner.names;
-	result->types = logical_planner.types;
-	result->value_map = std::move(logical_planner.value_map);
-	if (!logical_planner.properties.bound_all_parameters) {
-		return result;
-	}
+    auto logical_plan = std::move(logical_planner.plan);
+    // extract the result column names from the plan
+    result->properties = logical_planner.properties;
+    result->names = logical_planner.names;
+    result->types = logical_planner.types;
+    result->value_map = std::move(logical_planner.value_map);
+    if (!logical_planner.properties.bound_all_parameters) {
+        if (DuckDBDebugStepsEnabled_Client()) {
+            std::fprintf(stderr, "[DuckDBDebug] ClientContext::CreatePreparedStatementInternal - parameters not bound, return\n");
+            std::fflush(stderr);
+        }
+        return result;
+    }
 #ifdef DEBUG
-	logical_plan->Verify(*this);
+    logical_plan->Verify(*this);
 #endif
-	if (config.enable_optimizer && logical_plan->RequireOptimizer()) {
-		profiler.StartPhase(MetricType::ALL_OPTIMIZERS);
-		Optimizer optimizer(*logical_planner.binder, *this);
-		logical_plan = optimizer.Optimize(std::move(logical_plan));
-		D_ASSERT(logical_plan);
-		profiler.EndPhase();
+    if (config.enable_optimizer && logical_plan->RequireOptimizer()) {
+        profiler.StartPhase(MetricType::ALL_OPTIMIZERS);
+        Optimizer optimizer(*logical_planner.binder, *this);
+        logical_plan = optimizer.Optimize(std::move(logical_plan));
+        D_ASSERT(logical_plan);
+        if (DuckDBDebugStepsEnabled_Client()) {
+            std::fprintf(stderr, "[DuckDBDebug] ClientContext::CreatePreparedStatementInternal - ending phase ALL_OPTIMIZERS\n");
+            std::fflush(stderr);
+        }
+        profiler.EndPhase();
+        if (DuckDBDebugStepsEnabled_Client()) {
+            std::fprintf(stderr, "[DuckDBDebug] ClientContext::CreatePreparedStatementInternal - optimization complete\n");
+            std::fflush(stderr);
+        }
 
 #ifdef DEBUG
-		logical_plan->Verify(*this);
+        logical_plan->Verify(*this);
 #endif
-	}
+    }
 
-	// Convert the logical query plan into a physical query plan.
-	profiler.StartPhase(MetricType::PHYSICAL_PLANNER);
-	PhysicalPlanGenerator physical_planner(*this);
-	result->physical_plan = physical_planner.Plan(std::move(logical_plan));
-	profiler.EndPhase();
-	D_ASSERT(result->physical_plan);
-	return result;
+    // Convert the logical query plan into a physical query plan.
+    profiler.StartPhase(MetricType::PHYSICAL_PLANNER);
+    PhysicalPlanGenerator physical_planner(*this);
+    result->physical_plan = physical_planner.Plan(std::move(logical_plan));
+    if (DuckDBDebugStepsEnabled_Client()) {
+        std::fprintf(stderr, "[DuckDBDebug] ClientContext::CreatePreparedStatementInternal - ending phase PHYSICAL_PLANNER (before EndPhase)\n");
+        std::fflush(stderr);
+    }
+    profiler.EndPhase();
+    D_ASSERT(result->physical_plan);
+    if (DuckDBDebugStepsEnabled_Client()) {
+        std::fprintf(stderr, "[DuckDBDebug] ClientContext::CreatePreparedStatementInternal - physical plan ready, exit\n");
+        std::fflush(stderr);
+    }
+    return result;
 }
 
 shared_ptr<PreparedStatementData> ClientContext::CreatePreparedStatement(ClientContextLock &lock, const string &query,
                                                                          unique_ptr<SQLStatement> statement,
                                                                          PendingQueryParameters parameters,
                                                                          PreparedStatementMode mode) {
+    if (DuckDBDebugStepsEnabled_Client()) {
+        std::fprintf(stderr,
+                     "[DuckDBDebug] ClientContext::CreatePreparedStatement - enter (mode=%d, type=%s)\n",
+                     (int)mode, StatementTypeToString(statement->type).c_str());
+        std::fflush(stderr);
+    }
 	// check if any client context state could request a rebind
 	bool can_request_rebind = false;
 	for (auto &state : registered_state->States()) {
@@ -459,7 +510,12 @@ shared_ptr<PreparedStatementData> ClientContext::CreatePreparedStatement(ClientC
 		// an extension wants to do a rebind - do it once
 	}
 
-	return CreatePreparedStatementInternal(lock, query, std::move(statement), parameters);
+	auto res = CreatePreparedStatementInternal(lock, query, std::move(statement), parameters);
+	if (DuckDBDebugStepsEnabled_Client()) {
+		std::fprintf(stderr, "[DuckDBDebug] ClientContext::CreatePreparedStatement - exit\n");
+		std::fflush(stderr);
+	}
+	return res;
 }
 
 QueryProgress ClientContext::GetQueryProgress() {
@@ -493,6 +549,11 @@ void ClientContext::RebindPreparedStatement(ClientContextLock &lock, const strin
 }
 
 void ClientContext::CheckIfPreparedStatementIsExecutable(PreparedStatementData &statement) {
+    if (DuckDBDebugStepsEnabled_Client()) {
+        std::fprintf(stderr, "[DuckDBDebug] ClientContext::CheckIfPreparedStatementIsExecutable - enter (type=%s)\n",
+                     StatementTypeToString(statement.statement_type).c_str());
+        std::fflush(stderr);
+    }
 	if (ValidChecker::IsInvalidated(ActiveTransaction()) && statement.properties.requires_valid_transaction) {
 		throw ErrorManager::InvalidatedTransaction(*this);
 	}
@@ -513,6 +574,10 @@ void ClientContext::CheckIfPreparedStatementIsExecutable(PreparedStatementData &
 		}
 		meta_transaction.ModifyDatabase(*entry, it.second.modifications);
 	}
+    if (DuckDBDebugStepsEnabled_Client()) {
+        std::fprintf(stderr, "[DuckDBDebug] ClientContext::CheckIfPreparedStatementIsExecutable - exit\n");
+        std::fflush(stderr);
+    }
 }
 
 unique_ptr<PendingQueryResult>
@@ -524,6 +589,10 @@ ClientContext::PendingPreparedStatementInternal(ClientContextLock &lock,
 	BindPreparedStatementParameters(statement_data, parameters);
 
 	// Create the query executor.
+    if (DuckDBDebugStepsEnabled_Client()) {
+        std::fprintf(stderr, "[DuckDBDebug] ClientContext - creating Executor\n");
+        std::fflush(stderr);
+    }
 	active_query->executor = make_uniq<Executor>(*this);
 	auto &executor = *active_query->executor;
 
@@ -556,7 +625,15 @@ ClientContext::PendingPreparedStatementInternal(ClientContextLock &lock,
 	// Get the result collector and initialize the executor.
 	auto &collector = get_collector(*this, statement_data);
 	D_ASSERT(collector.type == PhysicalOperatorType::RESULT_COLLECTOR);
+    if (DuckDBDebugStepsEnabled_Client()) {
+        std::fprintf(stderr, "[DuckDBDebug] ClientContext - initializing Executor (building pipelines)\n");
+        std::fflush(stderr);
+    }
 	executor.Initialize(collector);
+    if (DuckDBDebugStepsEnabled_Client()) {
+        std::fprintf(stderr, "[DuckDBDebug] ClientContext - Executor initialized\n");
+        std::fflush(stderr);
+    }
 
 	auto types = executor.GetTypes();
 	D_ASSERT(types == statement_data.types);
@@ -566,12 +643,21 @@ ClientContext::PendingPreparedStatementInternal(ClientContextLock &lock,
 	    make_uniq<PendingQueryResult>(shared_from_this(), *statement_data_p, std::move(types), stream_result);
 	active_query->prepared = std::move(statement_data_p);
 	active_query->SetOpenResult(*pending_result);
+    if (DuckDBDebugStepsEnabled_Client()) {
+        std::fprintf(stderr, "[DuckDBDebug] ClientContext - PendingQueryResult created (execution ready)\n");
+        std::fflush(stderr);
+    }
 	return pending_result;
 }
 
 unique_ptr<PendingQueryResult> ClientContext::PendingPreparedStatement(ClientContextLock &lock, const string &query,
                                                                        shared_ptr<PreparedStatementData> prepared,
                                                                        const PendingQueryParameters &parameters) {
+	if (DuckDBDebugStepsEnabled_Client()) {
+		std::fprintf(stderr, "[DuckDBDebug] ClientContext::PendingPreparedStatement - enter (query='%s')\n",
+		            query.c_str());
+		std::fflush(stderr);
+	}
 	CheckIfPreparedStatementIsExecutable(*prepared);
 
 	RebindQueryInfo rebind = RebindQueryInfo::DO_NOT_REBIND;
@@ -587,10 +673,23 @@ unique_ptr<PendingQueryResult> ClientContext::PendingPreparedStatement(ClientCon
 		}
 	}
 	if (rebind == RebindQueryInfo::ATTEMPT_TO_REBIND) {
+		if (DuckDBDebugStepsEnabled_Client()) {
+			std::fprintf(stderr, "[DuckDBDebug] ClientContext::PendingPreparedStatement - attempting rebind\n");
+			std::fflush(stderr);
+		}
 		RebindPreparedStatement(lock, query, prepared, parameters);
 		CheckIfPreparedStatementIsExecutable(*prepared); // rerun this too as modified_databases might have changed
 	}
-	return PendingPreparedStatementInternal(lock, prepared, parameters);
+	if (DuckDBDebugStepsEnabled_Client()) {
+		std::fprintf(stderr, "[DuckDBDebug] ClientContext::PendingPreparedStatement - calling Internal\n");
+		std::fflush(stderr);
+	}
+	auto res = PendingPreparedStatementInternal(lock, prepared, parameters);
+	if (DuckDBDebugStepsEnabled_Client()) {
+		std::fprintf(stderr, "[DuckDBDebug] ClientContext::PendingPreparedStatement - exit (pending ready)\n");
+		std::fflush(stderr);
+	}
+	return res;
 }
 
 void ClientContext::WaitForTask(ClientContextLock &lock, BaseQueryResult &result) {
@@ -790,26 +889,60 @@ unique_ptr<QueryResult> ClientContext::Execute(const string &query, shared_ptr<P
 unique_ptr<PendingQueryResult> ClientContext::PendingStatementInternal(ClientContextLock &lock, const string &query,
                                                                        unique_ptr<SQLStatement> statement,
                                                                        const PendingQueryParameters &parameters) {
-	// prepare the query for execution
-	if (parameters.parameters) {
-		PreparedStatement::VerifyParameters(*parameters.parameters, statement->named_param_map);
-	}
+    if (DuckDBDebugStepsEnabled_Client()) {
+        std::fprintf(stderr,
+                     "[DuckDBDebug] ClientContext::PendingStatementInternal - enter (stmt_type=%s)\n",
+                     StatementTypeToString(statement->type).c_str());
+        std::fflush(stderr);
+    }
+    // prepare the query for execution
+    if (parameters.parameters) {
+        PreparedStatement::VerifyParameters(*parameters.parameters, statement->named_param_map);
+    }
 
-	auto prepared = CreatePreparedStatement(lock, query, std::move(statement), parameters,
-	                                        PreparedStatementMode::PREPARE_AND_EXECUTE);
+    auto prepared = CreatePreparedStatement(lock, query, std::move(statement), parameters,
+                                            PreparedStatementMode::PREPARE_AND_EXECUTE);
+    if (DuckDBDebugStepsEnabled_Client()) {
+        std::fprintf(stderr, "[DuckDBDebug] ClientContext::PendingStatementInternal - prepared created\n");
+        std::fflush(stderr);
+    }
 
-	idx_t parameter_count = !parameters.parameters ? 0 : parameters.parameters->size();
-	if (prepared->properties.parameter_count > 0 && parameter_count == 0) {
-		string error_message = StringUtil::Format("Expected %lld parameters, but none were supplied",
-		                                          prepared->properties.parameter_count);
-		return ErrorResult<PendingQueryResult>(InvalidInputException(error_message), query);
-	}
-	if (!prepared->properties.bound_all_parameters) {
-		return ErrorResult<PendingQueryResult>(InvalidInputException("Not all parameters were bound"), query);
-	}
-	// execute the prepared statement
-	CheckIfPreparedStatementIsExecutable(*prepared);
-	return PendingPreparedStatementInternal(lock, std::move(prepared), parameters);
+    idx_t parameter_count = !parameters.parameters ? 0 : parameters.parameters->size();
+    if (DuckDBDebugStepsEnabled_Client()) {
+        std::fprintf(stderr,
+                     "[DuckDBDebug] ClientContext::PendingStatementInternal - parameter check (expected=%lld, supplied=%llu)\n",
+                     prepared->properties.parameter_count, (unsigned long long)parameter_count);
+        std::fflush(stderr);
+    }
+    if (prepared->properties.parameter_count > 0 && parameter_count == 0) {
+        string error_message = StringUtil::Format("Expected %lld parameters, but none were supplied",
+                                                  prepared->properties.parameter_count);
+        return ErrorResult<PendingQueryResult>(InvalidInputException(error_message), query);
+    }
+    if (!prepared->properties.bound_all_parameters) {
+        return ErrorResult<PendingQueryResult>(InvalidInputException("Not all parameters were bound"), query);
+    }
+    // execute the prepared statement
+    if (DuckDBDebugStepsEnabled_Client()) {
+        std::fprintf(stderr, "[DuckDBDebug] ClientContext::PendingStatementInternal - before CheckIfPreparedStatementIsExecutable\n");
+        std::fflush(stderr);
+    }
+    CheckIfPreparedStatementIsExecutable(*prepared);
+    if (DuckDBDebugStepsEnabled_Client()) {
+        std::fprintf(stderr, "[DuckDBDebug] ClientContext::PendingStatementInternal - after CheckIfPreparedStatementIsExecutable\n");
+        std::fflush(stderr);
+    }
+    if (DuckDBDebugStepsEnabled_Client()) {
+        std::fprintf(stderr,
+                     "[DuckDBDebug] ClientContext::PendingStatementInternal - calling PendingPreparedStatementInternal\n");
+        std::fflush(stderr);
+    }
+    auto res = PendingPreparedStatementInternal(lock, std::move(prepared), parameters);
+    if (DuckDBDebugStepsEnabled_Client()) {
+        std::fprintf(stderr, "[DuckDBDebug] ClientContext::PendingStatementInternal - exit\n");
+        std::fflush(stderr);
+    }
+    return res;
 }
 
 unique_ptr<QueryResult> ClientContext::RunStatementInternal(ClientContextLock &lock, const string &query,
@@ -832,10 +965,16 @@ bool ClientContext::IsActiveResult(ClientContextLock &lock, BaseQueryResult &res
 unique_ptr<PendingQueryResult> ClientContext::PendingStatementOrPreparedStatementInternal(
     ClientContextLock &lock, const string &query, unique_ptr<SQLStatement> statement,
     shared_ptr<PreparedStatementData> &prepared, const PendingQueryParameters &parameters) {
+    if (DuckDBDebugStepsEnabled_Client()) {
+        std::fprintf(stderr,
+                     "[DuckDBDebug] ClientContext::PendingStatementOrPreparedStatementInternal - enter (has_statement=%s)\n",
+                     statement ? "true" : "false");
+        std::fflush(stderr);
+    }
 #ifdef DUCKDB_ALTERNATIVE_VERIFY
-	if (statement && statement->type != StatementType::LOGICAL_PLAN_STATEMENT) {
-		statement = statement->Copy();
-	}
+    if (statement && statement->type != StatementType::LOGICAL_PLAN_STATEMENT) {
+        statement = statement->Copy();
+    }
 #endif
 	if (statement && config.query_verification_enabled) {
 		// query verification is enabled
@@ -881,22 +1020,33 @@ unique_ptr<PendingQueryResult> ClientContext::PendingStatementOrPreparedStatemen
 			break;
 		}
 		}
-	}
-	return PendingStatementOrPreparedStatement(lock, query, std::move(statement), prepared, parameters);
+    }
+    auto res = PendingStatementOrPreparedStatement(lock, query, std::move(statement), prepared, parameters);
+    if (DuckDBDebugStepsEnabled_Client()) {
+        std::fprintf(stderr, "[DuckDBDebug] ClientContext::PendingStatementOrPreparedStatementInternal - exit\n");
+        std::fflush(stderr);
+    }
+    return res;
 }
 
 unique_ptr<PendingQueryResult> ClientContext::PendingStatementOrPreparedStatement(
     ClientContextLock &lock, const string &query, unique_ptr<SQLStatement> statement,
     shared_ptr<PreparedStatementData> &prepared, const PendingQueryParameters &parameters) {
-	unique_ptr<PendingQueryResult> pending;
+    if (DuckDBDebugStepsEnabled_Client()) {
+        std::fprintf(stderr,
+                     "[DuckDBDebug] ClientContext::PendingStatementOrPreparedStatement - enter (route=%s)\n",
+                     statement ? "statement" : "prepared");
+        std::fflush(stderr);
+    }
+    unique_ptr<PendingQueryResult> pending;
 
 	// Start the profiler.
 	auto &profiler = QueryProfiler::Get(*this);
 	profiler.StartQuery(query, IsExplainAnalyze(statement ? statement.get() : prepared->unbound_statement.get()));
 
-	try {
-		BeginQueryInternal(lock, query);
-	} catch (std::exception &ex) {
+ try {
+        BeginQueryInternal(lock, query);
+    } catch (std::exception &ex) {
 		ErrorData error(ex);
 		if (Exception::InvalidatesDatabase(error.Type())) {
 			// fatal exceptions invalidate the entire database
@@ -904,16 +1054,24 @@ unique_ptr<PendingQueryResult> ClientContext::PendingStatementOrPreparedStatemen
 			ValidChecker::Invalidate(db_instance, error.RawMessage());
 		}
 		return ErrorResult<PendingQueryResult>(std::move(error), query);
-	}
+ }
 
-	bool invalidate_query = true;
-	try {
-		if (statement) {
-			pending = PendingStatementInternal(lock, query, std::move(statement), parameters);
-		} else {
-			pending = PendingPreparedStatement(lock, query, prepared, parameters);
-		}
-	} catch (std::exception &ex) {
+ bool invalidate_query = true;
+ try {
+     if (statement) {
+         if (DuckDBDebugStepsEnabled_Client()) {
+             std::fprintf(stderr, "[DuckDBDebug] ClientContext::PendingStatementOrPreparedStatement - routing to PendingStatementInternal\n");
+             std::fflush(stderr);
+         }
+         pending = PendingStatementInternal(lock, query, std::move(statement), parameters);
+     } else {
+         if (DuckDBDebugStepsEnabled_Client()) {
+             std::fprintf(stderr, "[DuckDBDebug] ClientContext::PendingStatementOrPreparedStatement - routing to PendingPreparedStatement\n");
+             std::fflush(stderr);
+         }
+         pending = PendingPreparedStatement(lock, query, prepared, parameters);
+     }
+ } catch (std::exception &ex) {
 		ErrorData error(ex);
 		if (!Exception::InvalidatesTransaction(error.Type())) {
 			// standard exceptions do not invalidate the current transaction
@@ -927,14 +1085,18 @@ unique_ptr<PendingQueryResult> ClientContext::PendingStatementOrPreparedStatemen
 		}
 		// other types of exceptions do invalidate the current transaction
 		pending = ErrorResult<PendingQueryResult>(std::move(error), query);
-	}
-	if (pending->HasError()) {
-		// query failed: abort now
-		EndQueryInternal(lock, false, invalidate_query, pending->GetErrorObject());
-		return pending;
-	}
-	D_ASSERT(active_query->IsOpenResult(*pending));
-	return pending;
+    }
+    if (pending->HasError()) {
+        // query failed: abort now
+        EndQueryInternal(lock, false, invalidate_query, pending->GetErrorObject());
+        return pending;
+    }
+    D_ASSERT(active_query->IsOpenResult(*pending));
+    if (DuckDBDebugStepsEnabled_Client()) {
+        std::fprintf(stderr, "[DuckDBDebug] ClientContext::PendingStatementOrPreparedStatement - exit (pending ready)\n");
+        std::fflush(stderr);
+    }
+    return pending;
 }
 
 void ClientContext::LogQueryInternal(ClientContextLock &, const string &query) {
@@ -968,6 +1130,10 @@ unique_ptr<QueryResult> ClientContext::Query(unique_ptr<SQLStatement> statement,
 }
 
 unique_ptr<QueryResult> ClientContext::Query(const string &query, QueryParameters query_parameters) {
+    if (DuckDBDebugStepsEnabled_Client()) {
+        std::fprintf(stderr, "[DuckDBDebug] ClientContext::Query - enter (query='%s')\n", query.c_str());
+        std::fflush(stderr);
+    }
 	auto lock = LockContext();
 
 	vector<unique_ptr<SQLStatement>> statements;
@@ -985,6 +1151,11 @@ unique_ptr<QueryResult> ClientContext::Query(const string &query, QueryParameter
 		                                          std::move(collection), GetClientProperties());
 	}
 
+	if (DuckDBDebugStepsEnabled_Client()) {
+		std::fprintf(stderr, "[DuckDBDebug] ClientContext::Query - parsed %llu statement(s)\n",
+		            (unsigned long long)statements.size());
+		std::fflush(stderr);
+	}
 	unique_ptr<QueryResult> result;
 	optional_ptr<QueryResult> last_result;
 	bool last_had_result = false;
@@ -996,12 +1167,22 @@ unique_ptr<QueryResult> ClientContext::Query(const string &query, QueryParameter
 		if (!is_last_statement) {
 			parameters.query_parameters.output_type = QueryResultOutputType::FORCE_MATERIALIZED;
 		}
+		if (DuckDBDebugStepsEnabled_Client()) {
+			std::fprintf(stderr, "[DuckDBDebug] ClientContext::Query - PendingQueryInternal (stmt_idx=%llu)\n",
+			            (unsigned long long)i);
+			std::fflush(stderr);
+		}
 		auto pending_query = PendingQueryInternal(*lock, std::move(statement), parameters);
 		auto has_result = pending_query->properties.return_type == StatementReturnType::QUERY_RESULT;
 		unique_ptr<QueryResult> current_result;
 		if (pending_query->HasError()) {
 			current_result = ErrorResult<MaterializedQueryResult>(pending_query->GetErrorObject());
 		} else {
+			if (DuckDBDebugStepsEnabled_Client()) {
+				std::fprintf(stderr, "[DuckDBDebug] ClientContext::Query - ExecutePendingQueryInternal (stmt_idx=%llu)\n",
+				            (unsigned long long)i);
+				std::fflush(stderr);
+			}
 			current_result = ExecutePendingQueryInternal(*lock, *pending_query);
 		}
 		if (current_result->HasError()) {
@@ -1026,6 +1207,10 @@ unique_ptr<QueryResult> ClientContext::Query(const string &query, QueryParameter
 			last_result = last_result->next.get();
 		}
 		D_ASSERT(last_result);
+	}
+	if (DuckDBDebugStepsEnabled_Client()) {
+		std::fprintf(stderr, "[DuckDBDebug] ClientContext::Query - exit\n");
+		std::fflush(stderr);
 	}
 	return result;
 }
@@ -1099,13 +1284,29 @@ unique_ptr<PendingQueryResult> ClientContext::PendingQueryInternal(ClientContext
                                                                    unique_ptr<SQLStatement> statement,
                                                                    const PendingQueryParameters &parameters,
                                                                    bool verify) {
-	auto query = statement->query;
-	shared_ptr<PreparedStatementData> prepared;
-	if (verify) {
-		return PendingStatementOrPreparedStatementInternal(lock, query, std::move(statement), prepared, parameters);
-	} else {
-		return PendingStatementOrPreparedStatement(lock, query, std::move(statement), prepared, parameters);
-	}
+    if (DuckDBDebugStepsEnabled_Client()) {
+        std::fprintf(stderr,
+                     "[DuckDBDebug] ClientContext::PendingQueryInternal - enter (stmt_type=%s, verify=%s)\n",
+                     StatementTypeToString(statement->type).c_str(), verify ? "true" : "false");
+        std::fflush(stderr);
+    }
+    auto query = statement->query;
+    shared_ptr<PreparedStatementData> prepared;
+    if (verify) {
+        auto res = PendingStatementOrPreparedStatementInternal(lock, query, std::move(statement), prepared, parameters);
+        if (DuckDBDebugStepsEnabled_Client()) {
+            std::fprintf(stderr, "[DuckDBDebug] ClientContext::PendingQueryInternal - exit (via Internal)\n");
+            std::fflush(stderr);
+        }
+        return res;
+    } else {
+        auto res = PendingStatementOrPreparedStatement(lock, query, std::move(statement), prepared, parameters);
+        if (DuckDBDebugStepsEnabled_Client()) {
+            std::fprintf(stderr, "[DuckDBDebug] ClientContext::PendingQueryInternal - exit (direct)\n");
+            std::fflush(stderr);
+        }
+        return res;
+    }
 }
 
 unique_ptr<QueryResult> ClientContext::ExecutePendingQueryInternal(ClientContextLock &lock, PendingQueryResult &query) {

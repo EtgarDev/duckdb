@@ -1,7 +1,18 @@
 #include "duckdb/parallel/pipeline_executor.hpp"
-
 #include "duckdb/common/limits.hpp"
 #include "duckdb/main/client_context.hpp"
+#include <cstdio>
+#include <cstdlib>
+
+namespace {
+static bool DuckDBDebugStepsEnabled() {
+    static int enabled = []() {
+        const char *v = std::getenv("DUCKDB_DEBUG_STEPS");
+        return v && v[0] != '\0' && v[0] != '0' ? 1 : 0;
+    }();
+    return enabled != 0;
+}
+}
 
 #ifdef DUCKDB_DEBUG_ASYNC_SINK_SOURCE
 #include <chrono>
@@ -188,6 +199,10 @@ SinkNextBatchType PipelineExecutor::NextBatch(DataChunk &source_chunk, const boo
 }
 
 PipelineExecuteResult PipelineExecutor::Execute(idx_t max_chunks) {
+    if (DuckDBDebugStepsEnabled()) {
+        std::fprintf(stderr, "[DuckDBDebug] Enter PipelineExecutor::Execute (execution starts)\n");
+        std::fflush(stderr);
+    }
 	D_ASSERT(pipeline.sink);
 	auto &source_chunk = pipeline.operators.empty() ? final_chunk : *intermediate_chunks[0];
 	ExecutionBudget chunk_budget(max_chunks);
@@ -271,7 +286,12 @@ PipelineExecuteResult PipelineExecutor::Execute(idx_t max_chunks) {
 		return PipelineExecuteResult::NOT_FINISHED;
 	}
 
-	return PushFinalize();
+	auto res = PushFinalize();
+    if (DuckDBDebugStepsEnabled()) {
+        std::fprintf(stderr, "[DuckDBDebug] PipelineExecutor::Execute - execution finished (status=%d)\n", (int)res);
+        std::fflush(stderr);
+    }
+	return res;
 }
 
 bool PipelineExecutor::RemainingSinkChunk() const {

@@ -310,37 +310,58 @@ string QueryProfiler::ToString(ProfilerPrintFormat format) const {
 	}
 }
 
-void QueryProfiler::StartPhase(MetricType phase_metric) {
-	lock_guard<std::mutex> guard(lock);
-	if (!IsEnabled() || !running) {
-		return;
-	}
+namespace {
+static bool DuckDBDebugStepsEnabled_Profiler() {
+    static int enabled = []() {
+        const char *v = std::getenv("DUCKDB_DEBUG_STEPS");
+        return v && v[0] != '\0' && v[0] != '0' ? 1 : 0;
+    }();
+    return enabled != 0;
+}
+}
 
-	// start a new phase
-	phase_stack.push_back(phase_metric);
-	// restart the timer
-	phase_profiler.Start();
+void QueryProfiler::StartPhase(MetricType phase_metric) {
+    lock_guard<std::mutex> guard(lock);
+    if (!IsEnabled() || !running) {
+        return;
+    }
+
+    // start a new phase
+    phase_stack.push_back(phase_metric);
+    // restart the timer
+    phase_profiler.Start();
+    if (DuckDBDebugStepsEnabled_Profiler()) {
+        std::fprintf(stderr, "[DuckDBDebug] QueryProfiler::StartPhase(%s)\n",
+                     EnumUtil::ToString(phase_metric).c_str());
+        std::fflush(stderr);
+    }
 }
 
 void QueryProfiler::EndPhase() {
-	lock_guard<std::mutex> guard(lock);
-	if (!IsEnabled() || !running) {
-		return;
-	}
-	D_ASSERT(!phase_stack.empty());
+    lock_guard<std::mutex> guard(lock);
+    if (!IsEnabled() || !running) {
+        return;
+    }
+    D_ASSERT(!phase_stack.empty());
 
-	// end the timer
-	phase_profiler.End();
-	// add the timing to all currently active phases
-	for (auto &phase : phase_stack) {
-		phase_timings[phase] += phase_profiler.Elapsed();
-	}
-	// now remove the last added phase
-	phase_stack.pop_back();
+    // end the timer
+    phase_profiler.End();
+    // add the timing to all currently active phases
+    for (auto &phase : phase_stack) {
+        phase_timings[phase] += phase_profiler.Elapsed();
+    }
+    // now remove the last added phase
+    auto ended_phase = phase_stack.back();
+    phase_stack.pop_back();
 
-	if (!phase_stack.empty()) {
-		phase_profiler.Start();
-	}
+    if (!phase_stack.empty()) {
+        phase_profiler.Start();
+    }
+    if (DuckDBDebugStepsEnabled_Profiler()) {
+        std::fprintf(stderr, "[DuckDBDebug] QueryProfiler::EndPhase(%s)\n",
+                     EnumUtil::ToString(ended_phase).c_str());
+        std::fflush(stderr);
+    }
 }
 
 OperatorProfiler::OperatorProfiler(ClientContext &context) : context(context) {
