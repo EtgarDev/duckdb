@@ -6,6 +6,19 @@
 #include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/common/case_insensitive_map.hpp"
 
+#include <cstdio>
+#include <cstdlib>
+
+namespace {
+static bool DuckDBDebugStepsEnabled_CAPI() {
+    static int enabled = []() {
+        const char *v = std::getenv("DUCKDB_DEBUG_STEPS");
+        return v && v[0] != '\0' && v[0] != '0' ? 1 : 0;
+    }();
+    return enabled != 0;
+}
+}
+
 using duckdb::case_insensitive_map_t;
 using duckdb::Connection;
 using duckdb::date_t;
@@ -413,33 +426,51 @@ duckdb_state duckdb_bind_null(duckdb_prepared_statement prepared_statement, idx_
 }
 
 duckdb_state duckdb_execute_prepared(duckdb_prepared_statement prepared_statement, duckdb_result *out_result) {
-	auto wrapper = reinterpret_cast<PreparedStatementWrapper *>(prepared_statement);
-	if (!wrapper || !wrapper->statement || wrapper->statement->HasError()) {
-		return DuckDBError;
-	}
+    auto wrapper = reinterpret_cast<PreparedStatementWrapper *>(prepared_statement);
+    if (!wrapper || !wrapper->statement || wrapper->statement->HasError()) {
+        return DuckDBError;
+    }
 
-	duckdb::unique_ptr<duckdb::QueryResult> result;
-	try {
-		result = wrapper->statement->Execute(wrapper->values, false);
-	} catch (...) {
-		return DuckDBError;
-	}
-	return DuckDBTranslateResult(std::move(result), out_result);
+    if (DuckDBDebugStepsEnabled_CAPI()) {
+        std::fprintf(stderr, "[DuckDBDebug] CAPI duckdb_execute_prepared - enter (stream=false)\n");
+        std::fflush(stderr);
+    }
+    duckdb::unique_ptr<duckdb::QueryResult> result;
+    try {
+        result = wrapper->statement->Execute(wrapper->values, false);
+    } catch (...) {
+        return DuckDBError;
+    }
+    auto state = DuckDBTranslateResult(std::move(result), out_result);
+    if (DuckDBDebugStepsEnabled_CAPI()) {
+        std::fprintf(stderr, "[DuckDBDebug] CAPI duckdb_execute_prepared - exit (state=%d)\n", (int)state);
+        std::fflush(stderr);
+    }
+    return state;
 }
 
 duckdb_state duckdb_execute_prepared_streaming(duckdb_prepared_statement prepared_statement,
                                                duckdb_result *out_result) {
-	auto wrapper = reinterpret_cast<PreparedStatementWrapper *>(prepared_statement);
-	if (!wrapper || !wrapper->statement || wrapper->statement->HasError()) {
-		return DuckDBError;
-	}
+    auto wrapper = reinterpret_cast<PreparedStatementWrapper *>(prepared_statement);
+    if (!wrapper || !wrapper->statement || wrapper->statement->HasError()) {
+        return DuckDBError;
+    }
 
-	try {
-		auto result = wrapper->statement->Execute(wrapper->values, true);
-		return DuckDBTranslateResult(std::move(result), out_result);
-	} catch (...) {
-		return DuckDBError;
-	}
+    if (DuckDBDebugStepsEnabled_CAPI()) {
+        std::fprintf(stderr, "[DuckDBDebug] CAPI duckdb_execute_prepared_streaming - enter (stream=true)\n");
+        std::fflush(stderr);
+    }
+    try {
+        auto result = wrapper->statement->Execute(wrapper->values, true);
+        auto state = DuckDBTranslateResult(std::move(result), out_result);
+        if (DuckDBDebugStepsEnabled_CAPI()) {
+            std::fprintf(stderr, "[DuckDBDebug] CAPI duckdb_execute_prepared_streaming - exit (state=%d)\n", (int)state);
+            std::fflush(stderr);
+        }
+        return state;
+    } catch (...) {
+        return DuckDBError;
+    }
 }
 
 duckdb_statement_type duckdb_prepared_statement_type(duckdb_prepared_statement statement) {

@@ -3,6 +3,19 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/prepared_statement_data.hpp"
 
+#include <cstdio>
+#include <cstdlib>
+
+namespace {
+static bool DuckDBDebugStepsEnabled_Prepared() {
+    static int enabled = []() {
+        const char *v = std::getenv("DUCKDB_DEBUG_STEPS");
+        return v && v[0] != '\0' && v[0] != '0' ? 1 : 0;
+    }();
+    return enabled != 0;
+}
+}
+
 namespace duckdb {
 
 PreparedStatement::PreparedStatement(shared_ptr<ClientContext> context, shared_ptr<PreparedStatementData> data_p,
@@ -70,19 +83,43 @@ case_insensitive_map_t<LogicalType> PreparedStatement::GetExpectedParameterTypes
 
 unique_ptr<QueryResult> PreparedStatement::Execute(case_insensitive_map_t<BoundParameterData> &named_values,
                                                    bool allow_stream_result) {
-	auto pending = PendingQuery(named_values, allow_stream_result);
-	if (pending->HasError()) {
-		return make_uniq<MaterializedQueryResult>(pending->GetErrorObject());
-	}
-	return pending->Execute();
+    if (DuckDBDebugStepsEnabled_Prepared()) {
+        std::fprintf(stderr,
+                     "[DuckDBDebug] PreparedStatement::Execute(named_values) - enter (stream=%s, stmt_type=%s)\n",
+                     allow_stream_result ? "true" : "false",
+                     duckdb::StatementTypeToString(GetStatementType()).c_str());
+        std::fflush(stderr);
+    }
+    auto pending = PendingQuery(named_values, allow_stream_result);
+    if (pending->HasError()) {
+        return make_uniq<MaterializedQueryResult>(pending->GetErrorObject());
+    }
+    auto res = pending->Execute();
+    if (DuckDBDebugStepsEnabled_Prepared()) {
+        std::fprintf(stderr, "[DuckDBDebug] PreparedStatement::Execute(named_values) - exit\n");
+        std::fflush(stderr);
+    }
+    return res;
 }
 
 unique_ptr<QueryResult> PreparedStatement::Execute(vector<Value> &values, bool allow_stream_result) {
-	auto pending = PendingQuery(values, allow_stream_result);
-	if (pending->HasError()) {
-		return make_uniq<MaterializedQueryResult>(pending->GetErrorObject());
-	}
-	return pending->Execute();
+    if (DuckDBDebugStepsEnabled_Prepared()) {
+        std::fprintf(stderr,
+                     "[DuckDBDebug] PreparedStatement::Execute(values) - enter (n_values=%llu, stream=%s, stmt_type=%s)\n",
+                     (unsigned long long)values.size(), allow_stream_result ? "true" : "false",
+                     duckdb::StatementTypeToString(GetStatementType()).c_str());
+        std::fflush(stderr);
+    }
+    auto pending = PendingQuery(values, allow_stream_result);
+    if (pending->HasError()) {
+        return make_uniq<MaterializedQueryResult>(pending->GetErrorObject());
+    }
+    auto res = pending->Execute();
+    if (DuckDBDebugStepsEnabled_Prepared()) {
+        std::fprintf(stderr, "[DuckDBDebug] PreparedStatement::Execute(values) - exit\n");
+        std::fflush(stderr);
+    }
+    return res;
 }
 
 unique_ptr<PendingQueryResult> PreparedStatement::PendingQuery(vector<Value> &values, bool allow_stream_result) {
@@ -96,12 +133,18 @@ unique_ptr<PendingQueryResult> PreparedStatement::PendingQuery(vector<Value> &va
 
 unique_ptr<PendingQueryResult> PreparedStatement::PendingQuery(case_insensitive_map_t<BoundParameterData> &named_values,
                                                                bool allow_stream_result) {
-	if (!success) {
-		auto exception = InvalidInputException("Attempting to execute an unsuccessfully prepared statement!");
-		return make_uniq<PendingQueryResult>(ErrorData(exception));
-	}
-	PendingQueryParameters parameters;
-	parameters.parameters = &named_values;
+    if (!success) {
+        auto exception = InvalidInputException("Attempting to execute an unsuccessfully prepared statement!");
+        return make_uniq<PendingQueryResult>(ErrorData(exception));
+    }
+    if (DuckDBDebugStepsEnabled_Prepared()) {
+        std::fprintf(stderr,
+                     "[DuckDBDebug] PreparedStatement::PendingQuery(named_values) - enter (stream=%s)\n",
+                     allow_stream_result ? "true" : "false");
+        std::fflush(stderr);
+    }
+    PendingQueryParameters parameters;
+    parameters.parameters = &named_values;
 
 	try {
 		VerifyParameters(named_values, named_param_map);
@@ -109,14 +152,18 @@ unique_ptr<PendingQueryResult> PreparedStatement::PendingQuery(case_insensitive_
 		return make_uniq<PendingQueryResult>(ErrorData(ex));
 	}
 
-	D_ASSERT(data);
-	parameters.query_parameters.output_type =
-	    allow_stream_result && data->properties.output_type == QueryResultOutputType::ALLOW_STREAMING
-	        ? QueryResultOutputType::ALLOW_STREAMING
-	        : QueryResultOutputType::FORCE_MATERIALIZED;
-	auto result = context->PendingQuery(query, data, parameters);
-	// The result should not contain any reference to the 'vector<Value> parameters.parameters'
-	return result;
+    D_ASSERT(data);
+    parameters.query_parameters.output_type =
+        allow_stream_result && data->properties.output_type == QueryResultOutputType::ALLOW_STREAMING
+            ? QueryResultOutputType::ALLOW_STREAMING
+            : QueryResultOutputType::FORCE_MATERIALIZED;
+    auto result = context->PendingQuery(query, data, parameters);
+    if (DuckDBDebugStepsEnabled_Prepared()) {
+        std::fprintf(stderr, "[DuckDBDebug] PreparedStatement::PendingQuery(named_values) - exit (pending ready)\n");
+        std::fflush(stderr);
+    }
+    // The result should not contain any reference to the 'vector<Value> parameters.parameters'
+    return result;
 }
 
 } // namespace duckdb
