@@ -700,6 +700,12 @@ PendingExecutionResult ClientContext::ExecuteTaskInternal(ClientContextLock &loc
                                                           bool dry_run) {
 	D_ASSERT(active_query);
 	D_ASSERT(active_query->IsOpenResult(result));
+
+	if (DuckDBDebugStepsEnabled_Client()) {
+		std::printf("[DuckDBDebug] ClientContext::ExecuteTaskInternal - enter (dry_run=%d)\n", dry_run);
+		std::fflush(stderr);
+	}
+
 	bool invalidate_transaction = true;
 	try {
 		auto query_result = active_query->executor->ExecuteTask(dry_run);

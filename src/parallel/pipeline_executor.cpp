@@ -546,6 +546,12 @@ SinkResultType PipelineExecutor::Sink(DataChunk &chunk, OperatorSinkInput &input
 }
 
 SourceResultType PipelineExecutor::FetchFromSource(DataChunk &result) {
+	// debug-logging if needed
+	if (DuckDBDebugStepsEnabled()) {
+		std::fprintf(stderr, "[DuckDBDebug] Enter PipelineExecutor::FetchFromSource\n");
+		std::fflush(stderr);
+	}
+
 	StartOperator(*pipeline.source);
 
 	OperatorSourceInput source_input = {*pipeline.source_state, *local_source_state, interrupt_state};
