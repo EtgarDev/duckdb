@@ -133,6 +133,7 @@ void CommitState::CommitEntryDrop(CatalogEntry &entry, data_ptr_t dataptr) {
 	case CatalogType::TYPE_ENTRY:
 	case CatalogType::MACRO_ENTRY:
 	case CatalogType::TABLE_MACRO_ENTRY:
+	case CatalogType::TRIGGER_ENTRY:
 		if (entry.type == CatalogType::RENAMED_ENTRY || entry.type == parent.type) {
 			// ALTER statement, read the extra data after the entry
 			auto extra_data_size = Load<idx_t>(dataptr);
@@ -161,6 +162,7 @@ void CommitState::CommitEntryDrop(CatalogEntry &entry, data_ptr_t dataptr) {
 			case CatalogType::TYPE_ENTRY:
 			case CatalogType::MACRO_ENTRY:
 			case CatalogType::TABLE_MACRO_ENTRY:
+			case CatalogType::TRIGGER_ENTRY:
 				(void)column_name;
 				break;
 			default:
@@ -175,6 +177,7 @@ void CommitState::CommitEntryDrop(CatalogEntry &entry, data_ptr_t dataptr) {
 			case CatalogType::TYPE_ENTRY:
 			case CatalogType::MACRO_ENTRY:
 			case CatalogType::TABLE_MACRO_ENTRY:
+			case CatalogType::TRIGGER_ENTRY:
 				break;
 			default:
 				throw InternalException("Don't know how to create this type!");
@@ -201,6 +204,9 @@ void CommitState::CommitEntryDrop(CatalogEntry &entry, data_ptr_t dataptr) {
 			index_entry.CommitDrop();
 			break;
 		}
+		case CatalogType::TRIGGER_ENTRY:
+			// no action required
+			break;
 		default:
 			// no action required
 			break;
