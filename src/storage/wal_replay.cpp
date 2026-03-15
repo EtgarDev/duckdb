@@ -19,6 +19,7 @@
 #include "duckdb/main/settings.hpp"
 #include "duckdb/parser/parsed_data/alter_table_info.hpp"
 #include "duckdb/parser/parsed_data/create_schema_info.hpp"
+#include "duckdb/parser/parsed_data/create_trigger_info.hpp"
 #include "duckdb/parser/parsed_data/create_view_info.hpp"
 #include "duckdb/parser/parsed_data/drop_info.hpp"
 #include "duckdb/planner/binder.hpp"
@@ -244,6 +245,9 @@ protected:
 
 	void ReplayCreateIndex();
 	void ReplayDropIndex();
+
+	void ReplayCreateTrigger();
+	void ReplayDropTrigger();
 
 	void ReplayUseTable();
 	void ReplayInsert();
@@ -580,6 +584,12 @@ void WriteAheadLogDeserializer::ReplayEntry(WALType entry_type) {
 		break;
 	case WALType::DROP_INDEX:
 		ReplayDropIndex();
+		break;
+	case WALType::CREATE_TRIGGER:
+		ReplayCreateTrigger();
+		break;
+	case WALType::DROP_TRIGGER:
+		ReplayDropTrigger();
 		break;
 	case WALType::USE_TABLE:
 		ReplayUseTable();
@@ -1005,6 +1015,30 @@ void WriteAheadLogDeserializer::ReplayDropIndex() {
 		                                                     replay_info.index->GetIndexName() == info.name;
 	                                              }),
 	                               state.replay_index_infos.end());
+
+	catalog.DropEntry(context, info);
+}
+
+//===--------------------------------------------------------------------===//
+// Replay Trigger
+//===--------------------------------------------------------------------===//
+void WriteAheadLogDeserializer::ReplayCreateTrigger() {
+	auto entry = deserializer.ReadProperty<unique_ptr<CreateInfo>>(101, "trigger");
+	if (DeserializeOnly()) {
+		return;
+	}
+
+	catalog.CreateTrigger(context, entry->Cast<CreateTriggerInfo>());
+}
+
+void WriteAheadLogDeserializer::ReplayDropTrigger() {
+	DropInfo info;
+	info.type = CatalogType::TRIGGER_ENTRY;
+	info.schema = deserializer.ReadProperty<string>(101, "schema");
+	info.name = deserializer.ReadProperty<string>(102, "name");
+	if (DeserializeOnly()) {
+		return;
+	}
 
 	catalog.DropEntry(context, info);
 }

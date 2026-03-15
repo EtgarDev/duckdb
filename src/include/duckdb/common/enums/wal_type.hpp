@@ -44,6 +44,9 @@ enum class WALType : uint8_t {
 	CREATE_INDEX = 23,
 	DROP_INDEX = 24,
 
+	CREATE_TRIGGER = 30,
+	DROP_TRIGGER = 31,
+
 	// -----------------------------
 	// Data
 	// -----------------------------

@@ -29,6 +29,7 @@ class ScalarMacroCatalogEntry;
 class ViewCatalogEntry;
 class TypeCatalogEntry;
 class TableCatalogEntry;
+class TriggerCatalogEntry;
 class Transaction;
 class TransactionManager;
 class WriteAheadLogDeserializer;
@@ -92,6 +93,9 @@ public:
 
 	void WriteCreateIndex(const IndexCatalogEntry &entry);
 	void WriteDropIndex(const IndexCatalogEntry &entry);
+
+	void WriteCreateTrigger(const TriggerCatalogEntry &entry);
+	void WriteDropTrigger(const TriggerCatalogEntry &entry);
 
 	void WriteCreateType(const TypeCatalogEntry &entry);
 	void WriteDropType(const TypeCatalogEntry &entry);
