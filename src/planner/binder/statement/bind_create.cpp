@@ -465,6 +465,15 @@ SchemaCatalogEntry &Binder::BindCreateTriggerInfo(CreateTriggerInfo &create_trig
 	}
 	auto &table = *table_ptr;
 
+	// Validate that the trigger lives in the same catalog and schema as its table.
+	// The triggers executor scans the table's own schema for triggers, so a trigger stored in a different catalog
+	// or schema would be silently ignored if we allowed it to be created.
+	if (schema.catalog.GetName() != table.catalog.GetName() || schema.name != table.ParentSchema().name) {
+		throw BinderException(
+		    "Trigger \"%s\" must be created in the same catalog and schema as its table \"%s\" (expected \"%s.%s\")",
+		    create_trigger_info.trigger_name, table.name, table.catalog.GetName(), table.ParentSchema().name);
+	}
+
 	// Validate UPDATE OF columns exist
 	if (create_trigger_info.event_type == TriggerEventType::UPDATE_EVENT && !create_trigger_info.columns.empty()) {
 		auto &columns = table.GetColumns();

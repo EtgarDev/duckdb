@@ -59,3 +59,27 @@ DROP TABLE t1 CASCADE;
 
 statement ok
 DROP TABLE log_table;
+
+# Cross-catalog trigger: trigger must be in the same catalog and schema as its table
+statement ok
+ATTACH ':memory:' AS other_db;
+
+statement ok
+CREATE TABLE other_db.main.cross_tbl (id INTEGER);
+
+statement error
+CREATE TRIGGER trg_cross AFTER INSERT ON other_db.main.cross_tbl INSERT INTO log_table VALUES (1);
+----
+Binder Error: Trigger "trg_cross" must be created in the same catalog and schema as its table "cross_tbl" (expected "other_db.main")
+
+# Cross-schema trigger: trigger must be in the same schema as its table
+statement ok
+CREATE SCHEMA other_schema;
+
+statement ok
+CREATE TABLE other_schema.schema_tbl (id INTEGER);
+
+statement error
+CREATE TRIGGER trg_cross_schema AFTER INSERT ON other_schema.schema_tbl INSERT INTO log_table VALUES (1);
+----
+<REGEX>:Binder Error: Trigger "trg_cross_schema" must be created in the same catalog and schema as its table "schema_tbl".*
