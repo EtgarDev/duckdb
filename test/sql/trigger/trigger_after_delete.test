@@ -1,0 +1,168 @@
+# name: test/sql/trigger/trigger_after_delete.test
+# description: Test AFTER DELETE trigger firing
+# group: [trigger]
+
+require autocomplete
+
+statement ok
+call enable_peg_parser();
+
+statement ok
+CREATE TABLE target (id INTEGER);
+
+statement ok
+CREATE TABLE audit (msg VARCHAR);
+
+statement ok
+INSERT INTO target VALUES (1), (2), (3);
+
+# Basic: default (no FOR EACH clause) fires once per statement
+statement ok
+CREATE TRIGGER trg_basic AFTER DELETE ON target INSERT INTO audit VALUES ('deleted');
+
+statement ok
+DELETE FROM target WHERE id = 1;
+
+query I
+SELECT COUNT(*) FROM audit WHERE msg = 'deleted';
+----
+1
+
+# Trigger fires again on a second DELETE
+statement ok
+DELETE FROM target WHERE id = 2;
+
+query I
+SELECT COUNT(*) FROM audit WHERE msg = 'deleted';
+----
+2
+
+# FOR EACH ROW: fires once per deleted row
+statement ok
+CREATE TABLE row_target (id INTEGER);
+
+statement ok
+CREATE TABLE row_audit (msg VARCHAR);
+
+statement ok
+INSERT INTO row_target VALUES (10), (20), (30);
+
+statement ok
+CREATE TRIGGER trg_row AFTER DELETE ON row_target FOR EACH ROW INSERT INTO row_audit VALUES ('row');
+
+statement ok
+DELETE FROM row_target;
+
+query I
+SELECT COUNT(*) FROM row_audit;
+----
+3
+
+# FOR EACH STATEMENT: fires once regardless of how many rows are deleted
+statement ok
+CREATE TABLE stmt_target (id INTEGER);
+
+statement ok
+CREATE TABLE stmt_audit (msg VARCHAR);
+
+statement ok
+INSERT INTO stmt_target VALUES (1), (2), (3);
+
+statement ok
+CREATE TRIGGER trg_stmt AFTER DELETE ON stmt_target FOR EACH STATEMENT INSERT INTO stmt_audit VALUES ('statement');
+
+statement ok
+DELETE FROM stmt_target;
+
+query I
+SELECT COUNT(*) FROM stmt_audit;
+----
+1
+
+# Mix: one FOR EACH ROW and one FOR EACH STATEMENT trigger on the same table
+statement ok
+CREATE TABLE mix_target (id INTEGER);
+
+statement ok
+CREATE TABLE mix_row_audit (msg VARCHAR);
+
+statement ok
+CREATE TABLE mix_stmt_audit (msg VARCHAR);
+
+statement ok
+INSERT INTO mix_target VALUES (1), (2), (3), (4), (5);
+
+statement ok
+CREATE TRIGGER trg_mix_row AFTER DELETE ON mix_target FOR EACH ROW INSERT INTO mix_row_audit VALUES ('row');
+
+statement ok
+CREATE TRIGGER trg_mix_stmt AFTER DELETE ON mix_target FOR EACH STATEMENT INSERT INTO mix_stmt_audit VALUES ('statement');
+
+statement ok
+DELETE FROM mix_target;
+
+query I
+SELECT COUNT(*) FROM mix_row_audit;
+----
+5
+
+query I
+SELECT COUNT(*) FROM mix_stmt_audit;
+----
+1
+
+# DELETE failure does not fire the trigger
+statement ok
+CREATE TABLE fail_target (id INTEGER PRIMARY KEY);
+
+statement ok
+CREATE TABLE fail_audit (msg VARCHAR);
+
+statement ok
+INSERT INTO fail_target VALUES (1);
+
+statement ok
+CREATE TRIGGER trg_fail AFTER DELETE ON fail_target INSERT INTO fail_audit VALUES ('fired');
+
+# Trigger fires for a successful DELETE
+statement ok
+DELETE FROM fail_target WHERE id = 1;
+
+query I
+SELECT COUNT(*) FROM fail_audit;
+----
+1
+
+# Mixed INSERT + DELETE triggers on the same table both fire independently
+statement ok
+CREATE TABLE shared_target (id INTEGER);
+
+statement ok
+CREATE TABLE shared_audit (event VARCHAR);
+
+statement ok
+CREATE TRIGGER trg_shared_insert AFTER INSERT ON shared_target INSERT INTO shared_audit VALUES ('insert');
+
+statement ok
+CREATE TRIGGER trg_shared_delete AFTER DELETE ON shared_target INSERT INTO shared_audit VALUES ('delete');
+
+statement ok
+INSERT INTO shared_target VALUES (1), (2);
+
+query I
+SELECT COUNT(*) FROM shared_audit WHERE event = 'insert';
+----
+1
+
+statement ok
+DELETE FROM shared_target WHERE id = 1;
+
+query I
+SELECT COUNT(*) FROM shared_audit WHERE event = 'delete';
+----
+1
+
+query I
+SELECT COUNT(*) FROM shared_audit WHERE event = 'insert';
+----
+1
