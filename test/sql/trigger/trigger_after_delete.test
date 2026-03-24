@@ -133,6 +133,85 @@ SELECT COUNT(*) FROM fail_audit;
 ----
 1
 
+# DELETE failure (trigger body fails) does not persist the DELETE
+statement ok
+CREATE TABLE strict_target (id INTEGER PRIMARY KEY);
+
+statement ok
+CREATE TABLE strict_audit (msg VARCHAR);
+
+statement ok
+INSERT INTO strict_target VALUES (1), (2);
+
+statement ok
+CREATE TRIGGER trg_strict AFTER DELETE ON strict_target INSERT INTO strict_target VALUES (999), (999);
+
+# Trigger body inserts a duplicate PK => fails, rolling back the DELETE
+statement error
+DELETE FROM strict_target WHERE id = 1;
+----
+Constraint Error: PRIMARY KEY or UNIQUE constraint violation: duplicate key "999"
+
+# Neither the DELETE nor the trigger's insert should have persisted
+query I
+SELECT COUNT(*) FROM strict_target;
+----
+2
+
+query I
+SELECT COUNT(*) FROM strict_audit;
+----
+0
+
+# DELETE itself fails (FK violation) - trigger must not fire
+statement ok
+CREATE TABLE fk_parent (id INTEGER PRIMARY KEY);
+
+statement ok
+CREATE TABLE fk_child (parent_id INTEGER REFERENCES fk_parent(id));
+
+statement ok
+CREATE TABLE fk_audit (msg VARCHAR);
+
+statement ok
+INSERT INTO fk_parent VALUES (1);
+
+statement ok
+INSERT INTO fk_child VALUES (1);
+
+statement ok
+CREATE TRIGGER trg_fk AFTER DELETE ON fk_parent INSERT INTO fk_audit VALUES ('fired');
+
+# Deleting a referenced row fails with FK violation before Finalize
+statement error
+DELETE FROM fk_parent WHERE id = 1;
+----
+Constraint Error:
+
+# Trigger must not have fired
+query I
+SELECT COUNT(*) FROM fk_audit;
+----
+0
+
+# FOR EACH STATEMENT trigger fires even when DELETE produces 0 rows
+statement ok
+CREATE TABLE empty_target (id INTEGER);
+
+statement ok
+CREATE TABLE empty_audit (msg VARCHAR);
+
+statement ok
+CREATE TRIGGER trg_empty AFTER DELETE ON empty_target FOR EACH STATEMENT INSERT INTO empty_audit VALUES ('fired');
+
+statement ok
+DELETE FROM empty_target WHERE false;
+
+query I
+SELECT COUNT(*) FROM empty_audit;
+----
+1
+
 # Mixed INSERT + DELETE triggers on the same table both fire independently
 statement ok
 CREATE TABLE shared_target (id INTEGER);
