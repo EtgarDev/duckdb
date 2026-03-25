@@ -11,8 +11,6 @@
 
 namespace duckdb {
 
-constexpr idx_t TriggerExecutor::MAX_TRIGGER_DEPTH;
-
 struct TriggerDepthGuard {
 	explicit TriggerDepthGuard(idx_t &depth) : depth(depth) {
 		depth++;
@@ -29,6 +27,7 @@ static void ExecuteTriggerBody(ClientContext &context, const string &sql_body_te
 	if (parser.statements.empty()) {
 		return;
 	}
+	D_ASSERT(parser.statements.size() == 1);
 
 	Planner planner(context);
 	planner.CreatePlan(std::move(parser.statements[0]));
@@ -48,17 +47,11 @@ static void ExecuteTriggerBody(ClientContext &context, const string &sql_body_te
 	while (!trigger_executor.ExecutionIsFinished()) {
 		auto result = trigger_executor.ExecuteTask();
 		if (result == PendingExecutionResult::NO_TASKS_AVAILABLE || result == PendingExecutionResult::BLOCKED) {
-			// The trigger body's tasks are being executed by worker threads since ExecutionIsFinished() is false,
-			// but we have nothing to do (no tasks / blocked). We will just have to wait.
 			trigger_executor.WaitForTask();
 		}
 	}
-	// Race condition handling:
-	// When we this function finishes, the `trigger_executor` will be destructed.
-	// ~Executor() asserts executor_tasks == 0. executor_tasks is decremented in ~ExecutorTask(),
-	// which is about to be executed when a worker thread drops its shared_ptr<Task>,
-	// but this happens after ExecutionIsFinished() true and our loop exits.
-	// Calling CancelTasks() makes sure to hold before the local executor destructs, as it spins on `executor_tasks > 0`
+	// CancelTasks() spins until all worker threads release their tasks,
+	// preventing a race with ~Executor() which asserts executor_tasks == 0.
 	trigger_executor.CancelTasks();
 	if (trigger_executor.HasError()) {
 		trigger_executor.ThrowException();
@@ -107,7 +100,7 @@ static void FireTriggers(ClientContext &context, const vector<TriggerInfo> &trig
 void TriggerExecutor::Fire(ClientContext &context, TableCatalogEntry &table, idx_t row_count, TriggerTiming timing,
                            TriggerEventType event_type) {
 	if (context.trigger_depth >= MAX_TRIGGER_DEPTH) {
-		throw InvalidInputException("Trigger recursion depth limit (%llu) exceeded — possible infinite trigger loop",
+		throw InvalidInputException("Trigger recursion depth limit (%llu) exceeded.",
 		                            MAX_TRIGGER_DEPTH);
 	}
 	auto triggers = CollectTriggers(context, table, timing, event_type);
