@@ -53,6 +53,7 @@ namespace duckdb {
 struct QualifiedName;
 struct MatcherToken;
 struct GroupingExpressionMap;
+class Matcher;
 
 struct PEGTransformerState {
 	explicit PEGTransformerState(const vector<MatcherToken> &tokens_p) : tokens(tokens_p), token_index(0) {
@@ -194,7 +195,8 @@ public:
 	explicit PEGTransformerFactory();
 
 	//! Helper functions
-	static unique_ptr<SQLStatement> Transform(vector<MatcherToken> &tokens, ParserOptions &options);
+	static unique_ptr<SQLStatement> Transform(vector<MatcherToken> &tokens, ParserOptions &options,
+	                                          Matcher &root_matcher);
 	static optional_ptr<ParseResult> ExtractResultFromParens(optional_ptr<ParseResult> parse_result);
 	static vector<optional_ptr<ParseResult>> ExtractParseResultsFromList(optional_ptr<ParseResult> parse_result);
 	static bool ExpressionIsEmptyStar(ParsedExpression &expr);
@@ -733,6 +735,8 @@ private:
 	static unique_ptr<DropStatement> TransformDropSecret(PEGTransformer &transformer,
 	                                                     optional_ptr<ParseResult> parse_result);
 	static string TransformDropSecretStorage(PEGTransformer &transformer, optional_ptr<ParseResult> parse_result);
+	static unique_ptr<DropStatement> TransformDropTrigger(PEGTransformer &transformer,
+	                                                      optional_ptr<ParseResult> parse_result);
 
 	// execute.gram
 	static unique_ptr<SQLStatement> TransformExecuteStatement(PEGTransformer &transformer,

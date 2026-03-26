@@ -192,6 +192,9 @@ void Binder::BindView(ClientContext &context, const SelectStatement &stmt, const
 }
 
 void Binder::BindCreateViewInfo(CreateViewInfo &base) {
+	if (base.binding_mode == CreateViewBindingMode::SKIP_BINDING) {
+		return;
+	}
 	optional_ptr<LogicalDependencyList> dependencies;
 	if (Settings::Get<EnableViewDependenciesSetting>(context)) {
 		dependencies = base.dependencies;
@@ -446,6 +449,21 @@ void Binder::BindLogicalType(LogicalType &type) {
 SchemaCatalogEntry &Binder::BindCreateTriggerInfo(CreateTriggerInfo &create_trigger_info) {
 	auto &schema = BindCreateSchema(create_trigger_info);
 
+	// Block trigger creation on databases with an older storage version
+	auto &catalog = Catalog::GetCatalog(context, create_trigger_info.catalog);
+	auto &attached = catalog.GetAttached();
+	if (attached.HasStorageManager()) {
+		auto &storage_manager = attached.GetStorageManager();
+		const auto since = SerializationCompatibility::FromString("v2.0.0").serialization_version;
+		if (!create_trigger_info.temporary && !attached.IsTemporary() && !storage_manager.InMemory() &&
+		    storage_manager.GetStorageVersion() < since) {
+			string msg = "CREATE TRIGGER is only supported for storage versions v2.0.0 and higher.\n";
+			msg += "Use an in-memory database, ATTACH with (STORAGE_VERSION v2.0.0)";
+			throw BinderException(msg);
+		}
+	}
+
+
 	// Validate the table exists — use the table's own catalog/schema qualifiers only,
 	// not the trigger's schema (they are independent)
 	TableDescription table_description(create_trigger_info.base_table->catalog_name,
@@ -469,6 +487,7 @@ SchemaCatalogEntry &Binder::BindCreateTriggerInfo(CreateTriggerInfo &create_trig
 		    create_trigger_info.trigger_name, table.name, table.catalog.GetName(), table.ParentSchema().name);
 	}
 
+
 	// Validate UPDATE OF columns exist
 	if (create_trigger_info.event_type == TriggerEventType::UPDATE_EVENT && !create_trigger_info.columns.empty()) {
 		auto &columns = table.GetColumns();
@@ -486,9 +505,10 @@ SchemaCatalogEntry &Binder::BindCreateTriggerInfo(CreateTriggerInfo &create_trig
 		}
 	}
 
-	// Bind the trigger body to validate it
+	// Bind a copy of the trigger body to validate it (keep original unbound for serialization)
 	if (create_trigger_info.sql_body) {
-		Bind(*create_trigger_info.sql_body);
+		auto body_copy = create_trigger_info.sql_body->Copy();
+		Bind(*body_copy);
 	}
 
 	// Add table dependency
@@ -525,6 +545,14 @@ BoundStatement Binder::Bind(CreateStatement &stmt) {
 		auto &base = stmt.info->Cast<CreateViewInfo>();
 		// bind the schema
 		auto &schema = BindCreateSchema(*stmt.info);
+		if (stmt.info->on_conflict == OnCreateConflict::IGNORE_ON_CONFLICT) {
+			CatalogTransaction transaction(schema.ParentCatalog(), context);
+			auto existing_entry = schema.GetEntry(transaction, CatalogType::VIEW_ENTRY, base.view_name);
+			if (existing_entry && existing_entry->type == CatalogType::VIEW_ENTRY) {
+				// IF EXISTS and the view already exists - avoid binding
+				base.binding_mode = CreateViewBindingMode::SKIP_BINDING;
+			}
+		}
 		BindCreateViewInfo(base);
 		result.plan = make_uniq<LogicalCreate>(LogicalOperatorType::LOGICAL_CREATE_VIEW, std::move(stmt.info), &schema);
 		break;
