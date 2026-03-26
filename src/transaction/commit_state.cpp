@@ -178,7 +178,6 @@ void CommitState::CommitEntryDrop(CatalogEntry &entry, data_ptr_t dataptr) {
 			case CatalogType::TYPE_ENTRY:
 			case CatalogType::MACRO_ENTRY:
 			case CatalogType::TABLE_MACRO_ENTRY:
-			case CatalogType::TRIGGER_ENTRY:
 				break;
 			default:
 				throw InternalException("Don't know how to create this type!");
