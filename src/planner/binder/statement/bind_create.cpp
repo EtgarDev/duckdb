@@ -447,6 +447,23 @@ void Binder::BindLogicalType(LogicalType &type) {
 }
 
 SchemaCatalogEntry &Binder::BindCreateTriggerInfo(CreateTriggerInfo &create_trigger_info) {
+	// Resolve the base table first — triggers inherit catalog/schema from their table (like Postgres)
+	TableDescription table_description(create_trigger_info.base_table->catalog_name,
+	                                   create_trigger_info.base_table->schema_name,
+	                                   create_trigger_info.base_table->table_name);
+	auto table_ref = make_uniq<BaseTableRef>(table_description);
+	auto bound_table = Bind(*table_ref);
+	auto &get = bound_table.plan->Cast<LogicalGet>();
+	auto table_ptr = get.GetTable();
+	if (!table_ptr) {
+		throw BinderException("CREATE TRIGGER requires a base table");
+	}
+	auto &table = *table_ptr;
+
+	// Trigger inherits catalog/schema from the base table
+	create_trigger_info.catalog = table.catalog.GetName();
+	create_trigger_info.schema = table.schema.name;
+
 	auto &schema = BindCreateSchema(create_trigger_info);
 
 	// Block trigger creation on databases with an older storage version
@@ -462,31 +479,6 @@ SchemaCatalogEntry &Binder::BindCreateTriggerInfo(CreateTriggerInfo &create_trig
 			throw BinderException(msg);
 		}
 	}
-
-
-	// Validate the table exists — use the table's own catalog/schema qualifiers only,
-	// not the trigger's schema (they are independent)
-	TableDescription table_description(create_trigger_info.base_table->catalog_name,
-	                                   create_trigger_info.base_table->schema_name,
-	                                   create_trigger_info.base_table->table_name);
-	auto table_ref = make_uniq<BaseTableRef>(table_description);
-	auto bound_table = Bind(*table_ref);
-	auto &get = bound_table.plan->Cast<LogicalGet>();
-	auto table_ptr = get.GetTable();
-	if (!table_ptr) {
-		throw BinderException("CREATE TRIGGER requires a base table");
-	}
-	auto &table = *table_ptr;
-
-	// Validate that the trigger lives in the same catalog and schema as its table.
-	// The triggers executor scans the table's own schema for triggers, so a trigger stored in a different catalog
-	// or schema would be silently ignored if we allowed it to be created.
-	if (schema.catalog.GetName() != table.catalog.GetName() || schema.name != table.ParentSchema().name) {
-		throw BinderException(
-		    "Trigger \"%s\" must be created in the same catalog and schema as its table \"%s\" (expected \"%s.%s\")",
-		    create_trigger_info.trigger_name, table.name, table.catalog.GetName(), table.ParentSchema().name);
-	}
-
 
 	// Validate UPDATE OF columns exist
 	if (create_trigger_info.event_type == TriggerEventType::UPDATE_EVENT && !create_trigger_info.columns.empty()) {
@@ -506,10 +498,8 @@ SchemaCatalogEntry &Binder::BindCreateTriggerInfo(CreateTriggerInfo &create_trig
 	}
 
 	// Bind a copy of the trigger body to validate it (keep original unbound for serialization)
-	if (create_trigger_info.sql_body) {
-		auto body_copy = create_trigger_info.sql_body->Copy();
-		Bind(*body_copy);
-	}
+	auto body_copy = create_trigger_info.trigger_action->Copy();
+	Bind(*body_copy);
 
 	// Add table dependency
 	create_trigger_info.dependencies.AddDependency(table);
