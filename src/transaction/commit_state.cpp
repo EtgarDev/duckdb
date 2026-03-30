@@ -126,6 +126,7 @@ void CommitState::CommitEntryDrop(CatalogEntry &entry, data_ptr_t dataptr) {
 	auto &parent = entry.Parent();
 
 	switch (parent.type) {
+	case CatalogType::TRIGGER_ENTRY:
 	case CatalogType::TABLE_ENTRY:
 	case CatalogType::VIEW_ENTRY:
 	case CatalogType::INDEX_ENTRY:
@@ -161,6 +162,7 @@ void CommitState::CommitEntryDrop(CatalogEntry &entry, data_ptr_t dataptr) {
 			case CatalogType::TYPE_ENTRY:
 			case CatalogType::MACRO_ENTRY:
 			case CatalogType::TABLE_MACRO_ENTRY:
+			case CatalogType::TRIGGER_ENTRY:
 				(void)column_name;
 				break;
 			default:
@@ -220,7 +222,6 @@ void CommitState::CommitEntryDrop(CatalogEntry &entry, data_ptr_t dataptr) {
 	case CatalogType::SECRET_ENTRY:
 	case CatalogType::SECRET_TYPE_ENTRY:
 	case CatalogType::SECRET_FUNCTION_ENTRY:
-	case CatalogType::TRIGGER_ENTRY:
 		// do nothing, these entries are not persisted to disk
 		break;
 	default:

@@ -21,7 +21,7 @@ CREATE TRIGGER my_trigger AFTER INSERT ON t1 INSERT INTO log_table VALUES (1);
 
 # Verify trigger appears in duckdb_triggers
 query TTTT
-SELECT trigger_name, table_name, timing, event_manipulation FROM duckdb_triggers() WHERE trigger_name = 'my_trigger';
+SELECT trigger_name, table_name, action_timing, event_manipulation FROM duckdb_triggers() WHERE trigger_name = 'my_trigger';
 ----
 my_trigger	t1	AFTER	INSERT
 
@@ -53,6 +53,33 @@ upd_col_trigger	[id]
 statement ok
 CREATE TRIGGER IF NOT EXISTS my_trigger AFTER INSERT ON t1 INSERT INTO log_table VALUES (1);
 
+# --- Trigger with UPDATE body ---
+statement ok
+CREATE TRIGGER update_body_trigger AFTER INSERT ON t1 UPDATE log_table SET id = 99 WHERE log_table.id = 1;
+
+query TT
+SELECT trigger_name, sql FROM duckdb_triggers() WHERE trigger_name = 'update_body_trigger';
+----
+update_body_trigger	CREATE TRIGGER update_body_trigger AFTER INSERT ON t1 FOR EACH STATEMENT UPDATE log_table SET id = 99 WHERE (log_table.id = 1);
+
+# --- Trigger with DELETE body ---
+statement ok
+CREATE TRIGGER delete_body_trigger BEFORE DELETE ON t1 DELETE FROM log_table WHERE log_table.id = 1;
+
+query TT
+SELECT trigger_name, sql FROM duckdb_triggers() WHERE trigger_name = 'delete_body_trigger';
+----
+delete_body_trigger	CREATE TRIGGER delete_body_trigger BEFORE DELETE ON t1 FOR EACH STATEMENT DELETE FROM log_table WHERE (log_table.id = 1);
+
+# --- Trigger with INSERT ... SELECT body ---
+statement ok
+CREATE TRIGGER insert_select_trigger AFTER UPDATE ON t1 INSERT INTO log_table SELECT id FROM t1;
+
+query TT
+SELECT trigger_name, sql FROM duckdb_triggers() WHERE trigger_name = 'insert_select_trigger';
+----
+insert_select_trigger	CREATE TRIGGER insert_select_trigger AFTER UPDATE ON t1 FOR EACH STATEMENT INSERT INTO log_table SELECT id FROM t1;
+
 # Cleanup - CASCADE to drop dependent triggers
 statement ok
 DROP TABLE t1 CASCADE;
@@ -60,26 +87,30 @@ DROP TABLE t1 CASCADE;
 statement ok
 DROP TABLE log_table;
 
-# Cross-catalog trigger: trigger must be in the same catalog and schema as its table
+# --- Trigger inherits schema from its table ---
 statement ok
-ATTACH ':memory:' AS other_db;
+CREATE SCHEMA my_schema;
 
 statement ok
-CREATE TABLE other_db.main.cross_tbl (id INTEGER);
+CREATE TABLE my_schema.t2 (id INTEGER);
 
-statement error
-CREATE TRIGGER trg_cross AFTER INSERT ON other_db.main.cross_tbl INSERT INTO log_table VALUES (1);
+statement ok
+CREATE TABLE my_schema.log2 (id INTEGER);
+
+statement ok
+CREATE TRIGGER schema_trigger AFTER INSERT ON my_schema.t2 INSERT INTO my_schema.log2 VALUES (1);
+
+# Verify trigger is in the same schema as the table
+query TTT
+SELECT schema_name, trigger_name, table_name FROM duckdb_triggers() WHERE trigger_name = 'schema_trigger';
 ----
-Binder Error: Trigger "trg_cross" must be created in the same catalog and schema as its table "cross_tbl" (expected "other_db.main")
-
-# Cross-schema trigger: trigger must be in the same schema as its table
-statement ok
-CREATE SCHEMA other_schema;
+my_schema	schema_trigger	t2
 
 statement ok
-CREATE TABLE other_schema.schema_tbl (id INTEGER);
+DROP TABLE my_schema.t2 CASCADE;
 
-statement error
-CREATE TRIGGER trg_cross_schema AFTER INSERT ON other_schema.schema_tbl INSERT INTO log_table VALUES (1);
-----
-<REGEX>:Binder Error: Trigger "trg_cross_schema" must be created in the same catalog and schema as its table "schema_tbl".*
+statement ok
+DROP TABLE my_schema.log2;
+
+statement ok
+DROP SCHEMA my_schema CASCADE;

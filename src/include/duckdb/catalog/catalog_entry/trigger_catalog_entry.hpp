@@ -26,8 +26,8 @@ public:
 	vector<string> columns;
 	//! Whether this fires FOR EACH ROW or FOR EACH STATEMENT
 	TriggerForEach for_each;
-	//! The SQL body text (for serialization)
-	string sql_body_text;
+	//! The trigger action (INSERT/UPDATE/DELETE as QueryNode)
+	unique_ptr<QueryNode> trigger_action;
 
 public:
 	unique_ptr<CatalogEntry> Copy(ClientContext &context) const override;
