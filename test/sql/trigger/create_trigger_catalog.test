@@ -114,3 +114,15 @@ DROP TABLE my_schema.log2;
 
 statement ok
 DROP SCHEMA my_schema CASCADE;
+
+# Trigger body references a schema that does not exist — rejected at CREATE TRIGGER time
+statement ok
+CREATE SCHEMA src_schema;
+
+statement ok
+CREATE TABLE src_schema.t (id INTEGER);
+
+statement error
+CREATE TRIGGER trg_no_schema AFTER INSERT ON src_schema.t INSERT INTO nonexistent_schema.log VALUES ('fired');
+----
+Catalog Error: Table with name "nonexistent_schema.log" does not exist because schema "nonexistent_schema" does not exist.
