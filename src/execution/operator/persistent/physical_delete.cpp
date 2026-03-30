@@ -222,9 +222,6 @@ SinkCombineResultType PhysicalDelete::Combine(ExecutionContext &, OperatorSinkCo
 
 SinkFinalizeType PhysicalDelete::Finalize(Pipeline &pipeline, Event &event, ClientContext &context,
                                           OperatorSinkFinalizeInput &input) const {
-	auto &g = input.global_state.Cast<DeleteGlobalState>();
-	TriggerExecutor::Fire(context, tableref, g.deleted_count.load(), TriggerTiming::AFTER,
-	                      TriggerEventType::DELETE_EVENT);
 	return SinkFinalizeType::READY;
 }
 

@@ -4,6 +4,7 @@
 #include "duckdb/planner/expression_binder/where_binder.hpp"
 #include "duckdb/planner/expression_binder/returning_binder.hpp"
 #include "duckdb/planner/operator/logical_delete.hpp"
+#include "duckdb/planner/operator/logical_trigger.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_cross_product.hpp"
@@ -102,7 +103,21 @@ BoundStatement Binder::BindNode(DeleteQueryNode &node) {
 		                     std::move(del_as_logicaloperator), std::move(virtual_columns));
 	}
 	BoundStatement result;
-	result.plan = std::move(del);
+
+	// BEFORE is not yet supported
+	vector<unique_ptr<QueryNode>> trigger_bodies;
+	vector<TriggerForEach> trigger_for_each;
+	CollectTriggers(context, table, TriggerTiming::AFTER, TriggerEventType::DELETE_EVENT, trigger_bodies,
+	                trigger_for_each);
+	if (!trigger_bodies.empty()) {
+		auto trigger = make_uniq<LogicalTrigger>(table, TriggerTiming::AFTER, TriggerEventType::DELETE_EVENT,
+		                                         std::move(trigger_bodies), std::move(trigger_for_each));
+		trigger->AddChild(std::move(del));
+		result.plan = std::move(trigger);
+	} else {
+		result.plan = std::move(del);
+	}
+
 	result.names = {"Count"};
 	result.types = {LogicalType::BIGINT};
 
