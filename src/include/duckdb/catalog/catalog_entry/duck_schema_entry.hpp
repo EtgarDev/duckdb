@@ -33,8 +33,6 @@ private:
 	CatalogSet functions;
 	//! The catalog set holding the sequences
 	CatalogSet sequences;
-	//! The catalog set holding the triggers
-	CatalogSet triggers;
 	//! The catalog set holding the collations
 	CatalogSet collations;
 	//! The catalog set holding the types

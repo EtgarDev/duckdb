@@ -81,8 +81,7 @@ DuckSchemaEntry::DuckSchemaEntry(Catalog &catalog, CreateSchemaInfo &info)
                       catalog.IsSystemCatalog() ? make_uniq<DefaultTableFunctionGenerator>(catalog, *this) : nullptr),
       copy_functions(catalog), pragma_functions(catalog),
       functions(catalog, catalog.IsSystemCatalog() ? make_uniq<DefaultFunctionGenerator>(catalog, *this) : nullptr),
-      sequences(catalog), triggers(catalog), collations(catalog),
-      types(catalog, make_uniq<DefaultTypeGenerator>(catalog, *this)),
+      sequences(catalog), collations(catalog), types(catalog, make_uniq<DefaultTypeGenerator>(catalog, *this)),
       coordinate_systems(
           catalog, catalog.IsSystemCatalog() ? make_uniq<DefaultCoordinateSystemGenerator>(catalog, *this) : nullptr) {
 }
@@ -439,8 +438,6 @@ CatalogSet &DuckSchemaEntry::GetCatalogSet(CatalogType type) {
 		return functions;
 	case CatalogType::SEQUENCE_ENTRY:
 		return sequences;
-	case CatalogType::TRIGGER_ENTRY:
-		return triggers;
 	case CatalogType::COLLATION_ENTRY:
 		return collations;
 	case CatalogType::COORDINATE_SYSTEM_ENTRY:
@@ -462,7 +459,6 @@ void DuckSchemaEntry::Verify(Catalog &catalog) {
 	pragma_functions.Verify(catalog);
 	functions.Verify(catalog);
 	sequences.Verify(catalog);
-	triggers.Verify(catalog);
 	collations.Verify(catalog);
 	types.Verify(catalog);
 }
