@@ -220,11 +220,6 @@ SinkCombineResultType PhysicalDelete::Combine(ExecutionContext &, OperatorSinkCo
 	return SinkCombineResultType::FINISHED;
 }
 
-SinkFinalizeType PhysicalDelete::Finalize(Pipeline &pipeline, Event &event, ClientContext &context,
-                                          OperatorSinkFinalizeInput &input) const {
-	return SinkFinalizeType::READY;
-}
-
 unique_ptr<GlobalSinkState> PhysicalDelete::GetGlobalSinkState(ClientContext &context) const {
 	return make_uniq<DeleteGlobalState>(context, GetTypes(), tableref, bound_constraints);
 }
