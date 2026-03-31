@@ -150,6 +150,20 @@ static catalog_entry_vector_t GetCatalogEntries(vector<reference<SchemaCatalogEn
 			entries.push_back(view.get());
 		}
 
+		// Scan triggers from each table directly (triggers are nested under their table)
+		for (auto &table_entry : tables) {
+			auto &table = table_entry.get().Cast<TableCatalogEntry>();
+			if (!table.IsDuckTable()) {
+				continue;
+			}
+			auto &duck_table = table.Cast<DuckTableEntry>();
+			duck_table.ScanTriggersNonTransactional([&](CatalogEntry &entry) {
+				if (!entry.internal) {
+					entries.push_back(entry);
+				}
+			});
+		}
+
 		schema.Scan(CatalogType::SCALAR_FUNCTION_ENTRY, [&](CatalogEntry &entry) {
 			if (entry.internal) {
 				return;
@@ -170,13 +184,6 @@ static catalog_entry_vector_t GetCatalogEntries(vector<reference<SchemaCatalogEn
 
 		schema.Scan(CatalogType::INDEX_ENTRY, [&](CatalogEntry &entry) {
 			D_ASSERT(!entry.internal);
-			entries.push_back(entry);
-		});
-
-		schema.Scan(CatalogType::TRIGGER_ENTRY, [&](CatalogEntry &entry) {
-			if (entry.internal) {
-				return;
-			}
 			entries.push_back(entry);
 		});
 	}
@@ -546,7 +553,13 @@ void CheckpointReader::ReadTrigger(CatalogTransaction transaction, Deserializer 
 	auto info = deserializer.ReadProperty<unique_ptr<CreateInfo>>(100, "trigger");
 	auto &trigger_info = info->Cast<CreateTriggerInfo>();
 	trigger_info.on_conflict = OnCreateConflict::IGNORE_ON_CONFLICT;
-	catalog.CreateTrigger(transaction, trigger_info);
+	auto &schema = catalog.GetSchema(transaction, trigger_info.schema);
+	auto table_entry = schema.GetEntry(transaction, CatalogType::TABLE_ENTRY, trigger_info.base_table->table_name);
+	if (!table_entry) {
+		throw IOException("corrupt database file - trigger entry without table entry");
+	}
+	auto &duck_table = table_entry->Cast<DuckTableEntry>();
+	duck_table.CreateTrigger(transaction, trigger_info);
 }
 
 //===--------------------------------------------------------------------===//
