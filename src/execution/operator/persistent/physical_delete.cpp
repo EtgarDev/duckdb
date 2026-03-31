@@ -1,7 +1,6 @@
 #include "duckdb/execution/operator/persistent/physical_delete.hpp"
 
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
-#include "duckdb/execution/trigger_executor.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/common/vector_size.hpp"
