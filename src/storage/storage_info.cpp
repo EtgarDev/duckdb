@@ -94,6 +94,7 @@ static const StorageVersionInfo storage_version_info[] = {
 	{"v1.4.4", 67},
 	{"v1.5.0", 68},
 	{"v1.5.1", 68},
+	{"v1.5.2", 68},
 	{"v2.0.0", 68},
 	{nullptr, 0}
 };
@@ -126,6 +127,7 @@ static const SerializationVersionInfo serialization_version_info[] = {
 	{"v1.4.4", 6},
 	{"v1.5.0", 7},
 	{"v1.5.1", 7},
+	{"v1.5.2", 7},
 	{"v2.0.0", 8},
 	{"latest", 8},
 	{nullptr, 0}
