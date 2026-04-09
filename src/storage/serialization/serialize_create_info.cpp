@@ -201,6 +201,8 @@ void CreateTriggerInfo::Serialize(Serializer &serializer) const {
 	serializer.WritePropertyWithDefault<vector<string>>(206, "columns", columns);
 	serializer.WriteProperty<TriggerForEach>(207, "for_each", for_each);
 	serializer.WritePropertyWithDefault<unique_ptr<QueryNode>>(208, "trigger_action", trigger_action);
+	serializer.WritePropertyWithDefault<bool>(209, "uses_new_row", uses_new_row);
+	serializer.WritePropertyWithDefault<bool>(210, "uses_old_row", uses_old_row);
 }
 
 unique_ptr<CreateInfo> CreateTriggerInfo::Deserialize(Deserializer &deserializer) {
@@ -213,6 +215,8 @@ unique_ptr<CreateInfo> CreateTriggerInfo::Deserialize(Deserializer &deserializer
 	deserializer.ReadPropertyWithDefault<vector<string>>(206, "columns", result->columns);
 	deserializer.ReadProperty<TriggerForEach>(207, "for_each", result->for_each);
 	deserializer.ReadPropertyWithDefault<unique_ptr<QueryNode>>(208, "trigger_action", result->trigger_action);
+	deserializer.ReadPropertyWithDefault<bool>(209, "uses_new_row", result->uses_new_row);
+	deserializer.ReadPropertyWithDefault<bool>(210, "uses_old_row", result->uses_old_row);
 	return std::move(result);
 }
 

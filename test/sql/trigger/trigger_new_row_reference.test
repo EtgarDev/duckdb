@@ -1,0 +1,268 @@
+# name: test/sql/trigger/trigger_new_row_reference.test
+# description: Test NEW row references in AFTER INSERT trigger bodies
+# group: [trigger]
+
+require autocomplete
+
+statement ok
+call enable_peg_parser();
+
+# Basic: trigger body reads NEW.id and inserts it into audit table
+statement ok
+CREATE TABLE t1 (id INTEGER);
+
+statement ok
+CREATE TABLE t1_audit (copied_id INTEGER);
+
+statement ok
+CREATE TRIGGER trg_new_basic AFTER INSERT ON t1 FOR EACH ROW
+    INSERT INTO t1_audit SELECT NEW.id;
+
+statement ok
+INSERT INTO t1 VALUES (42);
+
+query I
+SELECT copied_id FROM t1_audit;
+----
+42
+
+# Multiple rows: trigger fires once per row, each sees its own NEW.id
+statement ok
+CREATE TABLE t2 (id INTEGER);
+
+statement ok
+CREATE TABLE t2_audit (copied_id INTEGER);
+
+statement ok
+CREATE TRIGGER trg_new_multi AFTER INSERT ON t2 FOR EACH ROW
+    INSERT INTO t2_audit SELECT NEW.id;
+
+statement ok
+INSERT INTO t2 VALUES (1), (2), (3);
+
+query I
+SELECT copied_id FROM t2_audit ORDER BY copied_id;
+----
+1
+2
+3
+
+# Multi-column table: NEW exposes all columns
+statement ok
+CREATE TABLE t3 (id INTEGER, name VARCHAR, val DOUBLE);
+
+statement ok
+CREATE TABLE t3_audit (id INTEGER, name VARCHAR, val DOUBLE);
+
+statement ok
+CREATE TRIGGER trg_new_cols AFTER INSERT ON t3 FOR EACH ROW
+    INSERT INTO t3_audit SELECT NEW.id, NEW.name, NEW.val;
+
+statement ok
+INSERT INTO t3 VALUES (10, 'hello', 3.14);
+
+query III
+SELECT id, name, val FROM t3_audit;
+----
+10	hello	3.14
+
+# Trigger body inserts into a cross-schema table using NEW columns
+statement ok
+CREATE SCHEMA log_schema;
+
+statement ok
+CREATE TABLE log_schema.entries (id INTEGER);
+
+statement ok
+CREATE TABLE t4 (id INTEGER);
+
+statement ok
+CREATE TRIGGER trg_new_cross_schema AFTER INSERT ON t4 FOR EACH ROW
+    INSERT INTO log_schema.entries SELECT NEW.id;
+
+statement ok
+INSERT INTO t4 VALUES (7), (8);
+
+query I
+SELECT id FROM log_schema.entries ORDER BY id;
+----
+7
+8
+
+# FOR EACH STATEMENT trigger with NEW reference is not valid for row-level data
+# (NEW is only meaningful FOR EACH ROW — this tests that the body still runs without error
+#  when the trigger doesn't use NEW at statement level)
+statement ok
+CREATE TABLE t5 (id INTEGER);
+
+statement ok
+CREATE TABLE t5_audit (msg VARCHAR);
+
+statement ok
+CREATE TRIGGER trg_stmt_no_new AFTER INSERT ON t5 FOR EACH STATEMENT
+    INSERT INTO t5_audit VALUES ('fired');
+
+statement ok
+INSERT INTO t5 VALUES (1), (2), (3);
+
+query I
+SELECT COUNT(*) FROM t5_audit;
+----
+1
+
+# Trigger body that uses NEW in a conditional expression
+statement ok
+CREATE TABLE t6 (id INTEGER);
+
+statement ok
+CREATE TABLE t6_audit (id INTEGER);
+
+statement ok
+CREATE TRIGGER trg_new_filter AFTER INSERT ON t6 FOR EACH ROW
+    INSERT INTO t6_audit SELECT NEW.id WHERE NEW.id > 5;
+
+statement ok
+INSERT INTO t6 VALUES (3), (6), (9);
+
+query I
+SELECT id FROM t6_audit ORDER BY id;
+----
+6
+9
+
+# Trigger body with invalid table reference is caught at CREATE TRIGGER time, not at INSERT time
+statement ok
+CREATE TABLE t7 (id INTEGER);
+
+statement error
+CREATE TRIGGER trg_invalid_table AFTER INSERT ON t7 FOR EACH ROW
+    INSERT INTO nonexistent_table SELECT NEW.id;
+----
+Catalog Error: Table with name nonexistent_table does not exist!
+
+# Trigger body referencing a non-existent column on NEW is also caught at CREATE TRIGGER time
+statement error
+CREATE TRIGGER trg_invalid_col AFTER INSERT ON t7 FOR EACH ROW
+    INSERT INTO t7 SELECT NEW.nonexistent_col;
+----
+Binder Error:
+
+# NEW reference inside an UPDATE trigger body - uses_new_row should be detected and injection should work
+statement ok
+CREATE TABLE t_upd_src (id INTEGER);
+
+statement ok
+CREATE TABLE t_upd_audit (last_id INTEGER);
+
+statement ok
+INSERT INTO t_upd_audit VALUES (0);
+
+statement ok
+CREATE TRIGGER trg_new_in_update AFTER INSERT ON t_upd_src FOR EACH ROW
+    UPDATE t_upd_audit SET last_id = NEW.id;
+
+statement ok
+INSERT INTO t_upd_src VALUES (42);
+
+query I
+SELECT last_id FROM t_upd_audit;
+----
+42
+
+# NEW reference with an explicit FROM clause is rejected at CREATE TRIGGER time with a clear error
+statement ok
+CREATE TABLE t8 (id INTEGER);
+
+statement ok
+CREATE TABLE t8_other (val INTEGER);
+
+statement error
+CREATE TRIGGER trg_new_with_from AFTER INSERT ON t8 FOR EACH ROW
+    INSERT INTO t8_other SELECT NEW.id FROM t8_other;
+----
+Not implemented Error: NEW references in trigger bodies with an explicit FROM clause are not yet supported.
+
+# Mixed triggers: one uses NEW, one does not - both should fire correctly
+statement ok
+CREATE TABLE t_mix (id INTEGER);
+
+statement ok
+CREATE TABLE t_mix_new_audit (copied_id INTEGER);
+
+statement ok
+CREATE TABLE t_mix_plain_audit (msg VARCHAR);
+
+statement ok
+CREATE TRIGGER trg_mix_with_new AFTER INSERT ON t_mix FOR EACH ROW
+    INSERT INTO t_mix_new_audit SELECT NEW.id;
+
+statement ok
+CREATE TRIGGER trg_mix_no_new AFTER INSERT ON t_mix FOR EACH ROW
+    INSERT INTO t_mix_plain_audit VALUES ('fired');
+
+statement ok
+INSERT INTO t_mix VALUES (1), (2), (3);
+
+query I
+SELECT copied_id FROM t_mix_new_audit ORDER BY copied_id;
+----
+1
+2
+3
+
+query I
+SELECT COUNT(*) FROM t_mix_plain_audit;
+----
+3
+
+# NEW in a DELETE trigger body is rejected - DELETE has no new row
+statement ok
+CREATE TABLE t9 (id INTEGER);
+
+statement error
+CREATE TRIGGER trg_new_in_delete AFTER INSERT ON t9 FOR EACH ROW
+    DELETE FROM t9 WHERE id = NEW.id;
+----
+Binder Error: NEW references are not supported in DELETE trigger bodies
+
+# OLD references are not yet supported
+statement error
+CREATE TRIGGER trg_old AFTER INSERT ON t9 FOR EACH ROW
+    INSERT INTO t9 SELECT OLD.id;
+----
+Not implemented Error: OLD references in trigger bodies are not yet supported
+
+# NEW is usable in a WHERE clause
+statement ok
+CREATE TABLE t_upd_where_src (id INTEGER);
+
+statement ok
+CREATE TABLE t_upd_where_audit (val INTEGER);
+
+statement ok
+INSERT INTO t_upd_where_audit VALUES (0), (0), (0);
+
+statement ok
+CREATE TRIGGER trg_new_in_where_clause AFTER INSERT ON t_upd_where_src FOR EACH ROW
+    UPDATE t_upd_where_audit SET val = NEW.id WHERE val = 0;
+
+statement ok
+INSERT INTO t_upd_where_src VALUES (99);
+
+query I
+SELECT COUNT(*) FROM t_upd_where_audit WHERE val = 99;
+----
+3
+
+# NEW in UPDATE body with explicit FROM clause is rejected
+statement ok
+CREATE TABLE t10 (id INTEGER);
+
+statement ok
+CREATE TABLE t10_other (val INTEGER);
+
+statement error
+CREATE TRIGGER trg_new_update_with_from AFTER INSERT ON t10 FOR EACH ROW
+    UPDATE t10_other SET val = NEW.id FROM t10_other;
+----
+Not implemented Error: NEW references in UPDATE trigger bodies with an explicit FROM clause are not yet supported

@@ -19,6 +19,7 @@ add_library_unity(
   sniff_csv.cpp
   read_file.cpp
   system_functions.cpp
+  trigger_row_scan.cpp
   summary.cpp
   table_scan.cpp
   unnest.cpp)

@@ -28,6 +28,10 @@ public:
 	TriggerForEach for_each;
 	//! The trigger action (INSERT/UPDATE/DELETE as QueryNode)
 	unique_ptr<QueryNode> trigger_action;
+	//! Whether the trigger body references NEW (set at bind time)
+	bool uses_new_row = false;
+	//! Whether the trigger body references OLD (set at bind time)
+	bool uses_old_row = false;
 
 public:
 	unique_ptr<CatalogEntry> Copy(ClientContext &context) const override;

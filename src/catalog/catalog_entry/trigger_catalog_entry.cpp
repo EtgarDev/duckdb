@@ -12,7 +12,7 @@ TriggerCatalogEntry::TriggerCatalogEntry(Catalog &catalog, SchemaCatalogEntry &s
     : StandardEntry(CatalogType::TRIGGER_ENTRY, schema, catalog, info.trigger_name),
       base_table(unique_ptr_cast<TableRef, BaseTableRef>(info.base_table->Copy())), timing(info.timing),
       event_type(info.event_type), columns(info.columns), for_each(info.for_each),
-      trigger_action(info.trigger_action->Copy()) {
+      trigger_action(info.trigger_action->Copy()), uses_new_row(info.uses_new_row), uses_old_row(info.uses_old_row) {
 	this->temporary = info.temporary;
 	this->comment = info.comment;
 	this->tags = info.tags;
@@ -35,6 +35,8 @@ unique_ptr<CreateInfo> TriggerCatalogEntry::GetInfo() const {
 	result->columns = columns;
 	result->for_each = for_each;
 	result->trigger_action = trigger_action->Copy();
+	result->uses_new_row = uses_new_row;
+	result->uses_old_row = uses_old_row;
 	result->dependencies = dependencies;
 	result->comment = comment;
 	result->tags = tags;

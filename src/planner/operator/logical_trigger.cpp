@@ -10,7 +10,7 @@ namespace duckdb {
 
 void CollectTriggers(ClientContext &context, TableCatalogEntry &table, TriggerTiming timing,
                      TriggerEventType event_type, vector<unique_ptr<QueryNode>> &trigger_bodies,
-                     vector<TriggerForEach> &trigger_for_each) {
+                     vector<TriggerForEach> &trigger_for_each, vector<bool> &trigger_uses_new_row) {
 	auto &duck_table = table.Cast<DuckTableEntry>();
 	auto transaction = table.ParentCatalog().GetCatalogTransaction(context);
 	duck_table.ScanTriggers(transaction, [&](CatalogEntry &entry) {
@@ -21,13 +21,16 @@ void CollectTriggers(ClientContext &context, TableCatalogEntry &table, TriggerTi
 		D_ASSERT(trigger.trigger_action);
 		trigger_bodies.push_back(trigger.trigger_action->Copy());
 		trigger_for_each.push_back(trigger.for_each);
+		trigger_uses_new_row.push_back(trigger.uses_new_row);
 	});
 }
 
 LogicalTrigger::LogicalTrigger(TableCatalogEntry &table, TriggerTiming timing, TriggerEventType event_type,
-                               vector<unique_ptr<QueryNode>> trigger_bodies, vector<TriggerForEach> trigger_for_each)
+                               vector<unique_ptr<QueryNode>> trigger_bodies, vector<TriggerForEach> trigger_for_each,
+                               vector<bool> trigger_uses_new_row, bool needs_row_data)
     : LogicalOperator(LogicalOperatorType::LOGICAL_TRIGGER), table(table), timing(timing), event_type(event_type),
-      trigger_bodies(std::move(trigger_bodies)), trigger_for_each(std::move(trigger_for_each)) {
+      trigger_bodies(std::move(trigger_bodies)), trigger_for_each(std::move(trigger_for_each)),
+      trigger_uses_new_row(std::move(trigger_uses_new_row)), needs_row_data(needs_row_data) {
 }
 
 LogicalTrigger::LogicalTrigger(ClientContext &context, const unique_ptr<CreateInfo> &table_info, TriggerTiming timing,

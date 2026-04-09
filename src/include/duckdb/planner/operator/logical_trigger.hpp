@@ -18,7 +18,7 @@ class TableCatalogEntry;
 
 void CollectTriggers(ClientContext &context, TableCatalogEntry &table, TriggerTiming timing,
                      TriggerEventType event_type, vector<unique_ptr<QueryNode>> &trigger_bodies,
-                     vector<TriggerForEach> &trigger_for_each);
+                     vector<TriggerForEach> &trigger_for_each, vector<bool> &trigger_uses_new_row);
 
 //! LogicalTrigger represents trigger firing for a statement
 class LogicalTrigger : public LogicalOperator {
@@ -27,14 +27,18 @@ public:
 
 public:
 	LogicalTrigger(TableCatalogEntry &table, TriggerTiming timing, TriggerEventType event_type,
-	               vector<unique_ptr<QueryNode>> trigger_bodies, vector<TriggerForEach> trigger_for_each);
+	               vector<unique_ptr<QueryNode>> trigger_bodies, vector<TriggerForEach> trigger_for_each,
+	               vector<bool> trigger_uses_new_row, bool needs_row_data);
 
 	TableCatalogEntry &table;
 	TriggerTiming timing;
 	TriggerEventType event_type;
-	//! Trigger bodies - parallel to trigger_for_each
+	//! Trigger bodies - parallel to trigger_for_each and trigger_uses_new_row
 	vector<unique_ptr<QueryNode>> trigger_bodies;
 	vector<TriggerForEach> trigger_for_each;
+	vector<bool> trigger_uses_new_row;
+	//! True when at least one trigger references NEW - child INSERT emits actual rows instead of a count
+	bool needs_row_data;
 
 public:
 	void Serialize(Serializer &serializer) const override;

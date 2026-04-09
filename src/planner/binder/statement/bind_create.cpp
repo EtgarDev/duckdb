@@ -15,6 +15,7 @@
 #include "duckdb/parser/constraints/foreign_key_constraint.hpp"
 #include "duckdb/parser/constraints/list.hpp"
 #include "duckdb/parser/constraints/unique_constraint.hpp"
+#include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/expression/subquery_expression.hpp"
@@ -25,9 +26,16 @@
 #include "duckdb/parser/parsed_data/create_view_info.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
 #include "duckdb/parser/statement/create_statement.hpp"
-#include "duckdb/parser/tableref/basetableref.hpp"
 #include "duckdb/parser/tableref/table_function_ref.hpp"
+#include "duckdb/parser/query_node/select_node.hpp"
+#include "duckdb/parser/query_node/insert_query_node.hpp"
+#include "duckdb/parser/query_node/update_query_node.hpp"
+#include "duckdb/parser/query_node/delete_query_node.hpp"
+#include "duckdb/parser/statement/update_statement.hpp"
+#include "duckdb/common/string_util.hpp"
+#include "duckdb/common/typedefs.hpp"
 #include "duckdb/planner/binder.hpp"
+#include "duckdb/execution/trigger_executor.hpp"
 #include "duckdb/planner/bound_query_node.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
@@ -446,6 +454,67 @@ void Binder::BindLogicalType(LogicalType &type) {
 	});
 }
 
+static bool ExpressionHasTableRef(const ParsedExpression &expr, const string &name) {
+	if (expr.GetExpressionType() == ExpressionType::COLUMN_REF) {
+		auto &col_ref = expr.Cast<ColumnRefExpression>();
+		if (col_ref.column_names.size() >= 2 && StringUtil::CIEquals(col_ref.column_names[0], name)) {
+			return true;
+		}
+	}
+	bool found = false;
+	ParsedExpressionIterator::EnumerateChildren(expr, [&](const ParsedExpression &child) {
+		if (!found) {
+			found = ExpressionHasTableRef(child, name);
+		}
+	});
+	return found;
+}
+
+static bool QueryNodeHasTableRef(const QueryNode &node, const string &name) {
+	switch (node.type) {
+	case QueryNodeType::INSERT_QUERY_NODE: {
+		auto &ins = node.Cast<InsertQueryNode>();
+		if (ins.select_statement && ins.select_statement->node &&
+		    ins.select_statement->node->type == QueryNodeType::SELECT_NODE) {
+			auto &sel = ins.select_statement->node->Cast<SelectNode>();
+			for (auto &expr : sel.select_list) {
+				if (ExpressionHasTableRef(*expr, name)) {
+					return true;
+				}
+			}
+			if (sel.where_clause && ExpressionHasTableRef(*sel.where_clause, name)) {
+				return true;
+			}
+		}
+		return false;
+	}
+	case QueryNodeType::UPDATE_QUERY_NODE: {
+		auto &upd = node.Cast<UpdateQueryNode>();
+		if (upd.set_info) {
+			for (auto &expr : upd.set_info->expressions) {
+				if (ExpressionHasTableRef(*expr, name)) {
+					return true;
+				}
+			}
+			if (upd.set_info->condition && ExpressionHasTableRef(*upd.set_info->condition, name)) {
+				return true;
+			}
+		}
+		return false;
+	}
+	case QueryNodeType::DELETE_QUERY_NODE: {
+		auto &del = node.Cast<DeleteQueryNode>();
+		if (del.condition && ExpressionHasTableRef(*del.condition, name)) {
+			return true;
+		}
+		return false;
+	}
+	default:
+		throw InternalException("Unimplemented trigger body type %s for NEW/OLD detection",
+		                        EnumUtil::ToChars(node.type));
+	}
+}
+
 SchemaCatalogEntry &Binder::BindCreateTriggerInfo(CreateTriggerInfo &create_trigger_info) {
 	// Resolve the base table first — triggers inherit catalog/schema from their table (like Postgres)
 	TableDescription table_description(create_trigger_info.base_table->catalog_name,
@@ -489,8 +558,64 @@ SchemaCatalogEntry &Binder::BindCreateTriggerInfo(CreateTriggerInfo &create_trig
 		}
 	}
 
-	// Bind a copy of the trigger body to validate it (keep original unbound for serialization)
+	create_trigger_info.uses_new_row = QueryNodeHasTableRef(*create_trigger_info.trigger_action, "NEW");
+	create_trigger_info.uses_old_row = QueryNodeHasTableRef(*create_trigger_info.trigger_action, "OLD");
+
+	if (create_trigger_info.uses_old_row) {
+		throw NotImplementedException("OLD references in trigger bodies are not yet supported");
+	}
+
+	// Bind a copy of the trigger body to validate it (keep original unbound for serialization).
 	auto body_copy = create_trigger_info.trigger_action->Copy();
+
+	TriggerRowBindingContext validation_ctx;
+	if (create_trigger_info.uses_new_row) {
+		if (body_copy->type == QueryNodeType::DELETE_QUERY_NODE) {
+			throw BinderException("NEW references are not supported in DELETE trigger bodies");
+		}
+
+		for (auto &col : table.GetColumns().Physical()) {
+			validation_ctx.column_names.push_back(col.Name());
+			validation_ctx.column_types.push_back(col.Type());
+		}
+
+		vector<unique_ptr<ParsedExpression>> args;
+		args.push_back(make_uniq<ConstantExpression>(Value::POINTER(CastPointerToValue(&validation_ctx))));
+		auto func_ref = make_uniq<TableFunctionRef>();
+		func_ref->function = make_uniq<FunctionExpression>("__trigger_row_scan", std::move(args));
+		func_ref->alias = "new";
+
+		switch (body_copy->type) {
+		case QueryNodeType::INSERT_QUERY_NODE: {
+			auto &ins = body_copy->Cast<InsertQueryNode>();
+			if (ins.select_statement && ins.select_statement->node &&
+			    ins.select_statement->node->type == QueryNodeType::SELECT_NODE) {
+				auto &sel = ins.select_statement->node->Cast<SelectNode>();
+				if (!sel.from_table || sel.from_table->type == TableReferenceType::EMPTY_FROM) {
+					sel.from_table = std::move(func_ref);
+				} else {
+					throw NotImplementedException(
+					    "NEW references in trigger bodies with an explicit FROM clause are not yet supported. "
+					    "Use SELECT NEW.col without a FROM clause.");
+				}
+			}
+			break;
+		}
+		case QueryNodeType::UPDATE_QUERY_NODE: {
+			auto &upd = body_copy->Cast<UpdateQueryNode>();
+			if (upd.from_table) {
+				throw NotImplementedException(
+				    "NEW references in UPDATE trigger bodies with an explicit FROM clause are not yet supported");
+			}
+			upd.from_table = std::move(func_ref);
+			break;
+		}
+		default:
+			throw InternalException("Unimplemented trigger body type %s for NEW row injection",
+			                        EnumUtil::ToChars(body_copy->type));
+		}
+	}
+
 	Bind(*body_copy);
 
 	// Add table dependency

@@ -376,6 +376,16 @@
         "id": 208,
         "name": "trigger_action",
         "type": "QueryNode*"
+      },
+      {
+        "id": 209,
+        "name": "uses_new_row",
+        "type": "bool"
+      },
+      {
+        "id": 210,
+        "name": "uses_old_row",
+        "type": "bool"
       }
     ]
   }
