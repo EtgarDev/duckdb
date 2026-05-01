@@ -707,6 +707,16 @@ struct DynamicOrFilterThresholdSetting {
 	static constexpr idx_t SettingIndex = 37;
 };
 
+struct EnableCachingOperatorsSetting {
+	using RETURN_TYPE = bool;
+	static constexpr const char *Name = "enable_caching_operators";
+	static constexpr const char *Description = "Enables caching operators that cache intermediate results";
+	static constexpr const char *InputType = "BOOLEAN";
+	static void SetLocal(ClientContext &context, const Value &parameter);
+	static void ResetLocal(ClientContext &context);
+	static Value GetSetting(const ClientContext &context);
+};
+
 struct EnableExternalAccessSetting {
 	using RETURN_TYPE = bool;
 	static constexpr const char *Name = "enable_external_access";
@@ -1569,7 +1579,7 @@ struct VacuumRebuildIndexesSetting {
 	static constexpr const char *InputType = "UBIGINT";
 	static constexpr const char *DefaultValue = "0";
 	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_DEFAULT;
-	static constexpr idx_t SettingIndex = 90;
+	static constexpr idx_t SettingIndex = 91;
 	static void OnSet(SettingCallbackInfo &info, Value &input);
 };
 
@@ -1582,7 +1592,7 @@ struct ValidateExternalFileCacheSetting {
 	static constexpr const char *InputType = "VARCHAR";
 	static constexpr const char *DefaultValue = "VALIDATE_ALL";
 	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_DEFAULT;
-	static constexpr idx_t SettingIndex = 91;
+	static constexpr idx_t SettingIndex = 92;
 	static void OnSet(SettingCallbackInfo &info, Value &input);
 };
 
@@ -1594,7 +1604,7 @@ struct VariantMinimumShreddingSizeSetting {
 	static constexpr const char *InputType = "BIGINT";
 	static constexpr const char *DefaultValue = "30000";
 	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_ONLY;
-	static constexpr idx_t SettingIndex = 92;
+	static constexpr idx_t SettingIndex = 93;
 };
 
 struct WalAutocheckpointEntriesSetting {
@@ -1605,7 +1615,7 @@ struct WalAutocheckpointEntriesSetting {
 	static constexpr const char *InputType = "UBIGINT";
 	static constexpr const char *DefaultValue = "0";
 	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_DEFAULT;
-	static constexpr idx_t SettingIndex = 93;
+	static constexpr idx_t SettingIndex = 94;
 };
 
 struct WarningsAsErrorsSetting {
@@ -1615,7 +1625,7 @@ struct WarningsAsErrorsSetting {
 	static constexpr const char *InputType = "BOOLEAN";
 	static constexpr const char *DefaultValue = "false";
 	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_ONLY;
-	static constexpr idx_t SettingIndex = 94;
+	static constexpr idx_t SettingIndex = 95;
 	static void OnSet(SettingCallbackInfo &info, Value &input);
 };
 
@@ -1627,7 +1637,7 @@ struct WriteBufferRowGroupCountSetting {
 	static constexpr const char *InputType = "UBIGINT";
 	static constexpr const char *DefaultValue = "5";
 	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_DEFAULT;
-	static constexpr idx_t SettingIndex = 95;
+	static constexpr idx_t SettingIndex = 96;
 };
 
 struct ZstdMinStringLengthSetting {
@@ -1638,11 +1648,11 @@ struct ZstdMinStringLengthSetting {
 	static constexpr const char *InputType = "UBIGINT";
 	static constexpr const char *DefaultValue = "4096";
 	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_ONLY;
-	static constexpr idx_t SettingIndex = 96;
+	static constexpr idx_t SettingIndex = 97;
 };
 
 struct GeneratedSettingInfo {
-	static constexpr idx_t MaxSettingIndex = 97;
+	static constexpr idx_t MaxSettingIndex = 98;
 };
 
 //===----------------------------------------------------------------------===//
