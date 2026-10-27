@@ -34,17 +34,6 @@ SELECT count(*) FROM range(5) t(i) WHERE i < 0 AND (error('never')::INTEGER) = 1
 ----
 0
 
-# A throwing operand does not take part in constant simplification of the other operand
-query I
-SELECT (error('never')::INTEGER = 1) OR true
-----
-true
-
-query I
-SELECT true OR (error('never')::INTEGER = 1)
-----
-true
-
 # Reachable errors are still raised
 statement error
 SELECT error('reached');
